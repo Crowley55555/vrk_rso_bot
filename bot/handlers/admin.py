@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
-from bot.config import COMPLETED_SHEET, IN_PROGRESS_SHEET, NOT_STARTED_SHEET, Settings
+from bot.config import COMPLETED_SHEET, IN_PROGRESS_SHEET, NOT_STARTED_SHEET, Settings, SHEET_KEY_TO_NAME
 from bot.keyboards import KeyboardFactory
-from bot.sheets import SheetsServiceError, append_task, move_task, update_cell
+from bot.sheets import SheetsServiceError, append_task, delete_row, get_all_tasks, move_task, update_cell
 from bot.states import AdminStates
 
-from .common import ADD_TASK_PATTERN, BACK_PATTERN, HOME_PATTERN, BaseHandler, TextFormatter
+from .common import ADD_TASK_PATTERN, BACK_PATTERN, HOME_PATTERN, BaseHandler, TaskMapper, TextFormatter
 
 
 logger = logging.getLogger(__name__)
@@ -139,7 +141,7 @@ class AdminTaskHandler(BaseHandler):
         return ConversationHandler.END
 
     async def start_edit_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Запускает редактирование комментария и срока."""
+        """Запускает редактирование комментария и срока (и ответственных для листа «В работе»)."""
 
         query = update.callback_query
         await query.answer()
@@ -157,6 +159,17 @@ class AdminTaskHandler(BaseHandler):
             await self.send_text(update, context, "Задача не найдена", reply_markup=KeyboardFactory.home_only_menu())
             return ConversationHandler.END
 
+        context.user_data["current_task"] = {
+            "sheet_name": task.sheet_name,
+            "sheet_key": sheet_key,
+            "row_index": row_index,
+            "A": task.date or "",
+            "B": task.task_name or "",
+            "C": task.comments or "",
+            "D": task.responsible or "",
+            "E": task.deadline or "",
+            "F": task.added_by or "",
+        }
         flow_data = {
             "sheet_key": sheet_key,
             "row_index": row_index,
@@ -211,19 +224,25 @@ class AdminTaskHandler(BaseHandler):
         sheet_name = self._sheet_name(flow_data["sheet_key"])
         row_index = int(flow_data["row_index"])
 
+        current_task = context.user_data.get("current_task") or {}
+
         try:
             if new_comments != flow_data["current_comments"]:
                 await update_cell(sheet_name, row_index, 3, new_comments)
+                current_task["C"] = new_comments
             if new_deadline != flow_data["current_deadline"]:
                 await update_cell(sheet_name, row_index, 5, new_deadline)
+                current_task["E"] = new_deadline
             if flow_data.get("sheet_key") == "progress" and "new_responsible" in flow_data:
                 new_responsible = flow_data["current_responsible"] if flow_data["new_responsible"] == "-" else flow_data["new_responsible"]
                 if new_responsible != flow_data.get("current_responsible"):
                     await update_cell(sheet_name, row_index, 4, new_responsible)
+                    current_task["D"] = new_responsible
         except SheetsServiceError:
             await self.show_error(update, context, "Не удалось обновить задачу.")
             return ConversationHandler.END
 
+        context.user_data["current_task"] = current_task
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
         await self.send_text(update, context, "Задача успешно обновлена")
@@ -276,6 +295,229 @@ class AdminTaskHandler(BaseHandler):
             reply_markup=KeyboardFactory.inline_home_menu(),
         )
         return ConversationHandler.END
+
+    async def show_delete_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает подтверждение удаления задачи (только для администраторов)."""
+
+        query = update.callback_query
+        await query.answer()
+
+        if not self.is_admin(update):
+            return
+
+        parts = query.data.split("_", maxsplit=3)
+        if len(parts) < 4:
+            return
+        sheet_key = parts[2]
+        try:
+            row_index = int(parts[3])
+        except ValueError:
+            return
+
+        try:
+            task = await self.fetch_task(sheet_key, row_index)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить задачу.")
+            return
+
+        if task is None:
+            await self.send_text(
+                update,
+                context,
+                "Задача не найдена.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        try:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=query.message.message_id,
+            )
+        except Exception:
+            pass
+
+        confirmation_text = (
+            "⚠️ Вы уверены, что хотите удалить задачу\\?\n\n"
+            "📌 " + TextFormatter.escape(task.task_name) + "\n\n"
+            "Это действие необратимо\\."
+        )
+        msg = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=confirmation_text,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=KeyboardFactory.delete_confirm_keyboard(sheet_key, row_index),
+        )
+        self.message_manager.remember_message(context, msg.message_id)
+
+    async def confirm_delete_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Удаляет задачу из листа и показывает обновлённый список."""
+
+        query = update.callback_query
+        await query.answer()
+
+        if not self.is_admin(update):
+            return
+
+        parts = query.data.split("_", maxsplit=3)
+        if len(parts) < 4:
+            return
+        sheet_key = parts[2]
+        try:
+            row_index = int(parts[3])
+        except ValueError:
+            return
+
+        sheet_name = self._sheet_name(sheet_key)
+
+        try:
+            await delete_row(sheet_name, row_index)
+        except SheetsServiceError:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=query.message.message_id,
+                )
+            except Exception:
+                pass
+            await self.send_text(
+                update,
+                context,
+                "❌ Ошибка при удалении задачи. Попробуйте снова.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        try:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=query.message.message_id,
+            )
+        except Exception:
+            pass
+
+        await self.send_text(
+            update,
+            context,
+            "🗑 Задача удалена.",
+        )
+
+        await asyncio.sleep(1.5)
+        await self._show_task_list_for_sheet(update, context, sheet_key)
+
+    async def cancel_delete_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Отменяет удаление и снова показывает карточку задачи."""
+
+        query = update.callback_query
+        await query.answer()
+
+        if not self.is_admin(update):
+            return
+
+        parts = query.data.split("_", maxsplit=3)
+        if len(parts) < 4:
+            return
+        sheet_key = parts[2]
+        try:
+            row_index = int(parts[3])
+        except ValueError:
+            return
+
+        try:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=query.message.message_id,
+            )
+        except Exception:
+            pass
+
+        try:
+            task = await self.fetch_task(sheet_key, row_index)
+        except SheetsServiceError:
+            await self.send_text(
+                update,
+                context,
+                "Не удалось загрузить задачу.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        if task is None:
+            await self.send_text(
+                update,
+                context,
+                "Задача не найдена.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        await self.send_preformatted_text(
+            update,
+            context,
+            TextFormatter.task_details(task),
+            reply_markup=KeyboardFactory.task_detail_keyboard(
+                sheet_key, row_index, is_admin=True
+            ),
+        )
+        await self.send_text(
+            update,
+            context,
+            "Используйте кнопки ниже для навигации",
+            reply_markup=KeyboardFactory.navigation_menu(),
+        )
+
+    async def _show_task_list_for_sheet(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        sheet_key: str,
+    ) -> None:
+        """Показывает список задач указанного листа (для администратора после удаления)."""
+
+        sheet_name = SHEET_KEY_TO_NAME[sheet_key]
+        try:
+            tasks = await get_all_tasks(sheet_name)
+        except SheetsServiceError:
+            await self.send_text(
+                update,
+                context,
+                "Не удалось загрузить список задач.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+
+        if not tasks:
+            await self.send_text(
+                update,
+                context,
+                "Список задач пуст",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
+        latest_tasks = task_views[-30:]
+        note = ""
+        if len(task_views) > 30:
+            note = "\n\nПоказаны последние 30 задач"
+        payload = [
+            {"task_name": t.task_name or "Без названия", "row_index": t.row_index}
+            for t in latest_tasks
+        ]
+        await self.send_text(
+            update,
+            context,
+            f"Выберите задачу{note}",
+            reply_markup=KeyboardFactory.task_list_keyboard(payload, sheet_key),
+        )
+        await self.send_text(
+            update,
+            context,
+            "Используйте кнопки ниже для навигации",
+            reply_markup=KeyboardFactory.navigation_menu(),
+        )
 
     async def start_take_in_work(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Запускает перевод задачи в лист 'В работе'."""
@@ -468,6 +710,7 @@ class AdminTaskHandler(BaseHandler):
         await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
+        context.user_data.pop("current_task", None)
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         await self.show_main_menu(update, context)
         return ConversationHandler.END
@@ -478,6 +721,7 @@ class AdminTaskHandler(BaseHandler):
         await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
+        context.user_data.pop("current_task", None)
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         await self.send_text(update, context, "Действие отменено")
         await self.show_main_menu(update, context)
@@ -533,32 +777,67 @@ class AdminTaskHandler(BaseHandler):
             remember_as_last=True,
         )
 
+    @staticmethod
+    def _format_edit_current_value(value: str | None) -> str:
+        """Возвращает строку текущего значения для вставки в сообщение (MarkdownV2). Пустое — «(не заполнено)»."""
+
+        if value is None or str(value).strip() == "":
+            return "\\(не заполнено\\)"
+        return TextFormatter.escape(str(value).strip())
+
     async def _ask_edit_comments(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["current_state"] = AdminStates.EDIT_COMMENTS
-        await self.send_text(
+        current_task = context.user_data.get("current_task") or {}
+        current_c = current_task.get("C") or ""
+        display = self._format_edit_current_value(current_c)
+        text = (
+            "✏️ Редактирование комментария\n\n"
+            "Текущее значение:\n"
+            f"{display}\n\n"
+            "Введите новый комментарий или «-» чтобы оставить без изменений\\."
+        )
+        await self.send_preformatted_text(
             update,
             context,
-            "Введите новый комментарий (или «-» чтобы оставить без изменений)",
+            text,
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
         )
 
     async def _ask_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["current_state"] = AdminStates.EDIT_DEADLINE
-        await self.send_text(
+        current_task = context.user_data.get("current_task") or {}
+        current_e = current_task.get("E") or ""
+        display = self._format_edit_current_value(current_e)
+        text = (
+            "✏️ Редактирование срока выполнения\n\n"
+            "Текущее значение:\n"
+            f"{display}\n\n"
+            "Введите новый срок или «-» чтобы оставить без изменений\\."
+        )
+        await self.send_preformatted_text(
             update,
             context,
-            "Введите новый срок выполнения (или «-» чтобы оставить без изменений)",
+            text,
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
         )
 
     async def _ask_edit_responsible(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["current_state"] = AdminStates.EDIT_RESPONSIBLE
-        await self.send_text(
+        current_task = context.user_data.get("current_task") or {}
+        current_d = current_task.get("D") or ""
+        display = self._format_edit_current_value(current_d)
+        text = (
+            "✏️ Редактирование ответственных\n\n"
+            "Текущее значение:\n"
+            f"{display}\n\n"
+            "Введите новых ответственных или «-» чтобы оставить без изменений\\."
+        )
+        await self.send_preformatted_text(
             update,
             context,
-            "Введите новых ответственных (или «-» чтобы оставить без изменений)",
+            text,
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
         )

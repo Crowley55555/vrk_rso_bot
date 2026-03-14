@@ -91,6 +91,24 @@ def build_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(common_handlers.go_home_inline_callback, pattern=r"^home_menu$")
     )
+    application.add_handler(
+        CallbackQueryHandler(
+            admin_handlers.show_delete_confirmation,
+            pattern=r"^delete_task_(todo|progress|done)_\d+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            admin_handlers.confirm_delete_task,
+            pattern=r"^confirm_delete_(todo|progress|done)_\d+$",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            admin_handlers.cancel_delete_task,
+            pattern=r"^cancel_delete_(todo|progress|done)_\d+$",
+        )
+    )
 
     application.add_handler(MessageHandler(filters.Regex(rf"^{HOME_BUTTON}$"), common_handlers.go_home))
     application.add_handler(MessageHandler(filters.Regex(rf"^{BACK_BUTTON}$"), common_handlers.go_home))
@@ -103,8 +121,15 @@ def main() -> None:
     """Точка входа в приложение."""
 
     configure_logging()
-    application = build_application()
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    log = logging.getLogger(__name__)
+    log.info("Запуск бота...")
+    try:
+        application = build_application()
+        log.info("Бот запущен, ожидание обновлений.")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        log.exception("Ошибка при запуске: %s", e)
+        raise
 
 
 if __name__ == "__main__":

@@ -72,8 +72,10 @@ class KeyboardFactory:
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
-    def task_detail_keyboard(sheet_key: str, row_index: int) -> InlineKeyboardMarkup:
-        """Создаёт inline-клавиатуру карточки задачи."""
+    def task_detail_keyboard(
+        sheet_key: str, row_index: int, *, is_admin: bool = False
+    ) -> InlineKeyboardMarkup:
+        """Создаёт inline-клавиатуру карточки задачи. Кнопка удаления только для администраторов."""
 
         keyboard: list[list[InlineKeyboardButton]] = [
             [InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{sheet_key}_{row_index}")]
@@ -99,7 +101,35 @@ class KeyboardFactory:
                     )
                 ]
             )
+        if is_admin:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "🗑 Удалить задачу",
+                        callback_data=f"delete_task_{sheet_key}_{row_index}",
+                    )
+                ]
+            )
         return InlineKeyboardMarkup(keyboard)
+
+    @staticmethod
+    def delete_confirm_keyboard(sheet_key: str, row_index: int) -> InlineKeyboardMarkup:
+        """Клавиатура подтверждения удаления задачи."""
+
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Да, удалить",
+                        callback_data=f"confirm_delete_{sheet_key}_{row_index}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Отмена",
+                        callback_data=f"cancel_delete_{sheet_key}_{row_index}",
+                    ),
+                ]
+            ]
+        )
 
     @staticmethod
     def inline_home_menu() -> InlineKeyboardMarkup:

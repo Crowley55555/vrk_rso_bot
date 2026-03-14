@@ -277,6 +277,7 @@ class CommonHandlers(BaseHandler):
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("selected_task", None)
+        context.user_data.pop("current_task", None)
         await self.show_main_menu(update, context)
         return -1
 
@@ -288,6 +289,7 @@ class CommonHandlers(BaseHandler):
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("selected_task", None)
+        context.user_data.pop("current_task", None)
         await self.show_main_menu(update, context)
 
     async def show_todo_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -334,13 +336,27 @@ class CommonHandlers(BaseHandler):
             "sheet_key": sheet_key,
             "row_index": row_index,
         }
+        context.user_data["current_task"] = {
+            "sheet_name": task.sheet_name,
+            "sheet_key": sheet_key,
+            "row_index": row_index,
+            "A": task.date or "",
+            "B": task.task_name or "",
+            "C": task.comments or "",
+            "D": task.responsible or "",
+            "E": task.deadline or "",
+            "F": task.added_by or "",
+        }
 
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        is_admin = self.is_admin(update)
         await self.send_preformatted_text(
             update,
             context,
             TextFormatter.task_details(task),
-            reply_markup=KeyboardFactory.task_detail_keyboard(sheet_key, row_index),
+            reply_markup=KeyboardFactory.task_detail_keyboard(
+                sheet_key, row_index, is_admin=is_admin
+            ),
         )
         await self.send_text(
             update,
