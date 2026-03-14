@@ -82,6 +82,14 @@ class KeyboardFactory:
             keyboard.append(
                 [InlineKeyboardButton("▶️ Взять в работу", callback_data=f"take_{sheet_key}_{row_index}")]
             )
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "✅ Отметить как выполненная",
+                        callback_data=f"mark_done_{row_index}",
+                    )
+                ]
+            )
         if sheet_key == "progress":
             keyboard.append(
                 [
@@ -92,3 +100,11 @@ class KeyboardFactory:
                 ]
             )
         return InlineKeyboardMarkup(keyboard)
+
+    @staticmethod
+    def inline_home_menu() -> InlineKeyboardMarkup:
+        """Возвращает inline-клавиатуру с одной кнопкой «Главное меню»."""
+
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🏠 Главное меню", callback_data="home_menu")]]
+        )

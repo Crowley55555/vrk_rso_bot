@@ -280,6 +280,16 @@ class CommonHandlers(BaseHandler):
         await self.show_main_menu(update, context)
         return -1
 
+    async def go_home_inline_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик нажатия inline-кнопки «Главное меню» (после подтверждений и т.п.)."""
+
+        if update.callback_query:
+            await update.callback_query.answer()
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        context.user_data.pop("flow_data", None)
+        context.user_data.pop("selected_task", None)
+        await self.show_main_menu(update, context)
+
     async def show_todo_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показывает список задач из листа 'Не начатые'."""
 

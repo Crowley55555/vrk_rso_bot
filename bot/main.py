@@ -88,6 +88,9 @@ def build_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(common_handlers.show_task_card, pattern=r"^task_(todo|progress|done)_\d+$")
     )
+    application.add_handler(
+        CallbackQueryHandler(common_handlers.go_home_inline_callback, pattern=r"^home_menu$")
+    )
 
     application.add_handler(MessageHandler(filters.Regex(rf"^{HOME_BUTTON}$"), common_handlers.go_home))
     application.add_handler(MessageHandler(filters.Regex(rf"^{BACK_BUTTON}$"), common_handlers.go_home))

@@ -31,6 +31,7 @@ class AdminTaskHandler(BaseHandler):
                 CallbackQueryHandler(self.start_edit_task, pattern=r"^edit_(todo|progress|done)_\d+$"),
                 CallbackQueryHandler(self.start_take_in_work, pattern=r"^take_(todo)_\d+$"),
                 CallbackQueryHandler(self.complete_task, pattern=r"^complete_(progress)_\d+$"),
+                CallbackQueryHandler(self.mark_done_from_todo, pattern=r"^mark_done_\d+$"),
             ],
             states={
                 AdminStates.ADD_TASK_NAME: [MessageHandler(user_text_filter, self.receive_task_name)],
@@ -39,7 +40,8 @@ class AdminTaskHandler(BaseHandler):
                 AdminStates.ADD_FULL_NAME: [MessageHandler(user_text_filter, self.receive_full_name)],
                 AdminStates.ADD_DEADLINE: [MessageHandler(user_text_filter, self.finish_add_task)],
                 AdminStates.EDIT_COMMENTS: [MessageHandler(user_text_filter, self.receive_edit_comment)],
-                AdminStates.EDIT_DEADLINE: [MessageHandler(user_text_filter, self.finish_edit_task)],
+                AdminStates.EDIT_DEADLINE: [MessageHandler(user_text_filter, self.receive_edit_deadline)],
+                AdminStates.EDIT_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_edit_responsible)],
                 AdminStates.TAKE_IN_WORK_COMMENTS: [MessageHandler(user_text_filter, self.receive_take_comment)],
                 AdminStates.TAKE_IN_WORK_RESPONSIBLE: [
                     MessageHandler(user_text_filter, self.finish_take_in_work)
@@ -155,13 +157,16 @@ class AdminTaskHandler(BaseHandler):
             await self.send_text(update, context, "Задача не найдена", reply_markup=KeyboardFactory.home_only_menu())
             return ConversationHandler.END
 
-        context.user_data["flow_mode"] = "edit"
-        context.user_data["flow_data"] = {
+        flow_data = {
             "sheet_key": sheet_key,
             "row_index": row_index,
             "current_comments": task.comments,
             "current_deadline": task.deadline,
         }
+        if sheet_key == "progress":
+            flow_data["current_responsible"] = task.responsible
+        context.user_data["flow_mode"] = "edit"
+        context.user_data["flow_data"] = flow_data
 
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         await self._ask_edit_comments(update, context)
@@ -175,14 +180,34 @@ class AdminTaskHandler(BaseHandler):
         await self._ask_edit_deadline(update, context)
         return AdminStates.EDIT_DEADLINE
 
-    async def finish_edit_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Обновляет комментарий и/или срок в исходной строке."""
+    async def receive_edit_deadline(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Принимает новый срок. Для листа «В работе» — запрашивает ответственных, иначе завершает редактирование."""
 
         flow_data = context.user_data.setdefault("flow_data", {})
         flow_data["new_deadline"] = update.message.text.strip()
+        await self.message_manager.delete_step_messages(update, context)
 
-        new_comments = flow_data["current_comments"] if flow_data["new_comments"] == "-" else flow_data["new_comments"]
-        new_deadline = flow_data["current_deadline"] if flow_data["new_deadline"] == "-" else flow_data["new_deadline"]
+        if flow_data.get("sheet_key") == "progress":
+            context.user_data["current_state"] = AdminStates.EDIT_DEADLINE
+            await self._ask_edit_responsible(update, context)
+            return AdminStates.EDIT_RESPONSIBLE
+
+        return await self._apply_edit_and_finish(update, context)
+
+    async def receive_edit_responsible(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Принимает новых ответственных и применяет все правки к задаче из листа «В работе»."""
+
+        flow_data = context.user_data.setdefault("flow_data", {})
+        flow_data["new_responsible"] = update.message.text.strip()
+        await self.message_manager.delete_step_messages(update, context)
+        return await self._apply_edit_and_finish(update, context)
+
+    async def _apply_edit_and_finish(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Применяет изменения комментария, срока и (для Sheet 2) ответственных и завершает редактирование."""
+
+        flow_data = context.user_data.setdefault("flow_data", {})
+        new_comments = flow_data["current_comments"] if flow_data.get("new_comments") == "-" else flow_data.get("new_comments", flow_data["current_comments"])
+        new_deadline = flow_data["current_deadline"] if flow_data.get("new_deadline") == "-" else flow_data.get("new_deadline", flow_data["current_deadline"])
         sheet_name = self._sheet_name(flow_data["sheet_key"])
         row_index = int(flow_data["row_index"])
 
@@ -191,16 +216,65 @@ class AdminTaskHandler(BaseHandler):
                 await update_cell(sheet_name, row_index, 3, new_comments)
             if new_deadline != flow_data["current_deadline"]:
                 await update_cell(sheet_name, row_index, 5, new_deadline)
+            if flow_data.get("sheet_key") == "progress" and "new_responsible" in flow_data:
+                new_responsible = flow_data["current_responsible"] if flow_data["new_responsible"] == "-" else flow_data["new_responsible"]
+                if new_responsible != flow_data.get("current_responsible"):
+                    await update_cell(sheet_name, row_index, 4, new_responsible)
         except SheetsServiceError:
-            await self.message_manager.delete_step_messages(update, context)
             await self.show_error(update, context, "Не удалось обновить задачу.")
             return ConversationHandler.END
 
-        await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
         await self.send_text(update, context, "Задача успешно обновлена")
         await self.show_main_menu(update, context)
+        return ConversationHandler.END
+
+    async def mark_done_from_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Переносит задачу из «Не начатые» напрямую в «Выполненные» (минуя «В работе»)."""
+
+        query = update.callback_query
+        await query.answer()
+        row_index = int(query.data.split("_")[-1])
+
+        try:
+            task = await self.fetch_task("todo", row_index)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить задачу.")
+            return ConversationHandler.END
+
+        if task is None:
+            await self.message_manager.cleanup_session(update.effective_chat.id, context)
+            await self.send_text(update, context, "Задача не найдена", reply_markup=KeyboardFactory.home_only_menu())
+            return ConversationHandler.END
+
+        row_data = [
+            self.now_date(),
+            task.task_name,
+            task.comments,
+            task.responsible,
+            task.deadline,
+            task.added_by,
+        ]
+
+        try:
+            await move_task(
+                NOT_STARTED_SHEET,
+                COMPLETED_SHEET,
+                row_index,
+                {"row_data": row_data},
+            )
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось перенести задачу в архив.")
+            return ConversationHandler.END
+
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        await self.send_text(
+            update,
+            context,
+            "✅ Задача отмечена как выполненная и перенесена в архив.",
+            reply_markup=KeyboardFactory.inline_home_menu(),
+        )
         return ConversationHandler.END
 
     async def start_take_in_work(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -365,10 +439,14 @@ class AdminTaskHandler(BaseHandler):
                 context.user_data.pop("flow_mode", None)
                 await self.show_main_menu(update, context)
                 return ConversationHandler.END
-
-            flow_data.pop("new_comments", None)
-            await self._ask_edit_comments(update, context)
-            return AdminStates.EDIT_COMMENTS
+            if current_state == AdminStates.EDIT_DEADLINE:
+                flow_data.pop("new_comments", None)
+                await self._ask_edit_comments(update, context)
+                return AdminStates.EDIT_COMMENTS
+            if current_state == AdminStates.EDIT_RESPONSIBLE:
+                flow_data.pop("new_deadline", None)
+                await self._ask_edit_deadline(update, context)
+                return AdminStates.EDIT_DEADLINE
 
         if mode == "take_in_work":
             if current_state == AdminStates.TAKE_IN_WORK_COMMENTS:
@@ -471,6 +549,16 @@ class AdminTaskHandler(BaseHandler):
             update,
             context,
             "Введите новый срок выполнения (или «-» чтобы оставить без изменений)",
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_edit_responsible(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.EDIT_RESPONSIBLE
+        await self.send_text(
+            update,
+            context,
+            "Введите новых ответственных (или «-» чтобы оставить без изменений)",
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
         )
