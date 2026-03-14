@@ -29,6 +29,21 @@ from bot.sheets import SheetsServiceError, get_all_tasks
 logger = logging.getLogger(__name__)
 
 
+def get_user_display_name(user) -> str:
+    """Возвращает отображаемое имя пользователя: @username, имя фамилия или ID: {id}."""
+
+    if user is None:
+        return "ID: unknown"
+    if getattr(user, "username", None) and str(user.username).strip():
+        return f"@{user.username}"
+    first = (getattr(user, "first_name", None) or "").strip()
+    last = (getattr(user, "last_name", None) or "").strip()
+    full = " ".join((first, last)).strip()
+    if full:
+        return full
+    return f"ID: {user.id}"
+
+
 @dataclass(slots=True)
 class TaskView:
     """Нормализованное представление задачи для интерфейса бота."""

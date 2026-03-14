@@ -7,10 +7,10 @@ from telegram.ext import CommandHandler, ContextTypes, ConversationHandler, Mess
 
 from bot.config import ADD_TASK_BUTTON, BACK_BUTTON, HOME_BUTTON, NOT_STARTED_SHEET, Settings
 from bot.keyboards import KeyboardFactory
-from bot.sheets import SheetsServiceError, append_task
+from bot.sheets import SheetsServiceError, append_task, write_log
 from bot.states import UserStates
 
-from .common import ADD_TASK_PATTERN, BACK_PATTERN, HOME_PATTERN, BaseHandler, MessageManager
+from .common import ADD_TASK_PATTERN, BACK_PATTERN, HOME_PATTERN, BaseHandler, MessageManager, get_user_display_name
 
 
 logger = logging.getLogger(__name__)
@@ -109,6 +109,10 @@ class UserTaskHandler(BaseHandler):
             await self.message_manager.delete_step_messages(update, context)
             await self.show_error(update, context, "Не удалось сохранить задачу. Попробуйте позже.")
             return ConversationHandler.END
+
+        who = get_user_display_name(update.effective_user)
+        details = f"Срок: {flow_data.get('deadline') or ''}. Ответственные: . Кто добавил: {flow_data['full_name']}"
+        await write_log(who, "Добавлена задача", flow_data["task_name"], NOT_STARTED_SHEET, details)
 
         await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)

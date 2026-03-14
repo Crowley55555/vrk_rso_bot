@@ -6,7 +6,7 @@ from typing import Any
 
 import gspread
 
-from bot.config import Settings
+from bot.config import LOG_SHEET, Settings
 
 
 logger = logging.getLogger(__name__)
@@ -151,6 +151,40 @@ class GoogleSheetsService:
         target.append_row(row_data, value_input_option="USER_ENTERED")
         source.delete_rows(row_index)
 
+    async def write_log(
+        self,
+        who: str,
+        action: str,
+        task_name: str,
+        sheet_name: str,
+        details: str,
+    ) -> None:
+        """Записывает одну строку в лист «Лог». При ошибке пишет в лог, не прерывая сценарий."""
+
+        from datetime import datetime
+
+        try:
+            async with self._write_lock:
+                row = [
+                    datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+                    who,
+                    action,
+                    task_name,
+                    sheet_name,
+                    details,
+                ]
+                await asyncio.to_thread(
+                    self._append_task_sync,
+                    LOG_SHEET,
+                    row,
+                )
+        except Exception as err:
+            logger.error(
+                "Не удалось записать в лист «Лог»: %s",
+                err,
+                exc_info=True,
+            )
+
 
 _service: GoogleSheetsService | None = None
 
@@ -201,3 +235,15 @@ async def move_task(
     """Перемещает задачу между листами с блокировкой на запись."""
 
     await _get_service().move_task(from_sheet, to_sheet, row_index, extra_data)
+
+
+async def write_log(
+    who: str,
+    action: str,
+    task_name: str,
+    sheet_name: str,
+    details: str,
+) -> None:
+    """Пишет запись в лист «Лог». При ошибке только логирует, не прерывает работу."""
+
+    await _get_service().write_log(who, action, task_name, sheet_name, details)

@@ -9,10 +9,26 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Con
 
 from bot.config import COMPLETED_SHEET, IN_PROGRESS_SHEET, NOT_STARTED_SHEET, Settings, SHEET_KEY_TO_NAME
 from bot.keyboards import KeyboardFactory
-from bot.sheets import SheetsServiceError, append_task, delete_row, get_all_tasks, move_task, update_cell
+from bot.sheets import (
+    SheetsServiceError,
+    append_task,
+    delete_row,
+    get_all_tasks,
+    move_task,
+    update_cell,
+    write_log,
+)
 from bot.states import AdminStates
 
-from .common import ADD_TASK_PATTERN, BACK_PATTERN, HOME_PATTERN, BaseHandler, TaskMapper, TextFormatter
+from .common import (
+    ADD_TASK_PATTERN,
+    BACK_PATTERN,
+    HOME_PATTERN,
+    BaseHandler,
+    TaskMapper,
+    TextFormatter,
+    get_user_display_name,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -133,6 +149,10 @@ class AdminTaskHandler(BaseHandler):
             await self.show_error(update, context, "Не удалось сохранить задачу. Попробуйте позже.")
             return ConversationHandler.END
 
+        who = get_user_display_name(update.effective_user)
+        details = f"Срок: {flow_data.get('deadline') or ''}. Ответственные: {flow_data.get('responsible') or ''}. Кто добавил: {flow_data['full_name']}"
+        await write_log(who, "Добавлена задача", flow_data["task_name"], NOT_STARTED_SHEET, details)
+
         await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
@@ -225,22 +245,31 @@ class AdminTaskHandler(BaseHandler):
         row_index = int(flow_data["row_index"])
 
         current_task = context.user_data.get("current_task") or {}
+        task_name = current_task.get("B") or ""
 
+        changes: list[str] = []
         try:
             if new_comments != flow_data["current_comments"]:
                 await update_cell(sheet_name, row_index, 3, new_comments)
                 current_task["C"] = new_comments
+                changes.append(f'Комментарий: "{flow_data["current_comments"]}" → "{new_comments}"')
             if new_deadline != flow_data["current_deadline"]:
                 await update_cell(sheet_name, row_index, 5, new_deadline)
                 current_task["E"] = new_deadline
+                changes.append(f'Срок: "{flow_data["current_deadline"]}" → "{new_deadline}"')
             if flow_data.get("sheet_key") == "progress" and "new_responsible" in flow_data:
                 new_responsible = flow_data["current_responsible"] if flow_data["new_responsible"] == "-" else flow_data["new_responsible"]
                 if new_responsible != flow_data.get("current_responsible"):
                     await update_cell(sheet_name, row_index, 4, new_responsible)
                     current_task["D"] = new_responsible
+                    changes.append(f'Ответственные: "{flow_data.get("current_responsible", "")}" → "{new_responsible}"')
         except SheetsServiceError:
             await self.show_error(update, context, "Не удалось обновить задачу.")
             return ConversationHandler.END
+
+        details = "; ".join(changes) if changes else "Изменений не внесено"
+        who = get_user_display_name(update.effective_user)
+        await write_log(who, "Редактирование задачи", task_name, sheet_name, details)
 
         context.user_data["current_task"] = current_task
         context.user_data.pop("flow_data", None)
@@ -286,6 +315,15 @@ class AdminTaskHandler(BaseHandler):
         except SheetsServiceError:
             await self.show_error(update, context, "Не удалось перенести задачу в архив.")
             return ConversationHandler.END
+
+        who = get_user_display_name(update.effective_user)
+        await write_log(
+            who,
+            "Задача выполнена (без взятия в работу)",
+            task.task_name,
+            "Не начатые → Выполненные",
+            f"Ответственные: {task.responsible}",
+        )
 
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         await self.send_text(
@@ -371,6 +409,21 @@ class AdminTaskHandler(BaseHandler):
         sheet_name = self._sheet_name(sheet_key)
 
         try:
+            task = await self.fetch_task(sheet_key, row_index)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить задачу.")
+            return
+        if task is None:
+            await self.send_text(
+                update,
+                context,
+                "Задача не найдена.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+        task_name = task.task_name
+
+        try:
             await delete_row(sheet_name, row_index)
         except SheetsServiceError:
             try:
@@ -387,6 +440,9 @@ class AdminTaskHandler(BaseHandler):
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
+
+        who = get_user_display_name(update.effective_user)
+        await write_log(who, "Задача удалена", task_name, sheet_name, "Удалено администратором")
 
         try:
             await context.bot.delete_message(
@@ -592,6 +648,15 @@ class AdminTaskHandler(BaseHandler):
             await self.show_error(update, context, "Не удалось перевести задачу в работу.")
             return ConversationHandler.END
 
+        who = get_user_display_name(update.effective_user)
+        await write_log(
+            who,
+            "Задача взята в работу",
+            flow_data["task_name"],
+            "Не начатые → В работе",
+            f"Ответственные: {responsible}",
+        )
+
         await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
@@ -637,6 +702,15 @@ class AdminTaskHandler(BaseHandler):
         except SheetsServiceError:
             await self.show_error(update, context, "Не удалось отметить задачу как выполненную.")
             return ConversationHandler.END
+
+        who = get_user_display_name(update.effective_user)
+        await write_log(
+            who,
+            "Задача выполнена",
+            task.task_name,
+            "В работе → Выполненные",
+            f"Ответственные: {task.responsible}",
+        )
 
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         await self.send_text(update, context, "Задача отмечена как выполненная")

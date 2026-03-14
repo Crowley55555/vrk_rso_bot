@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 NOT_STARTED_SHEET = "Не начатые"
 IN_PROGRESS_SHEET = "В работе"
 COMPLETED_SHEET = "Выполненные"
+LOG_SHEET = "Лог"
 
 SHEET_KEY_TO_NAME = {
     "todo": NOT_STARTED_SHEET,

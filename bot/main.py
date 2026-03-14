@@ -8,6 +8,7 @@ if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from telegram import Update
+from telegram.error import Conflict
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.config import (
@@ -37,6 +38,14 @@ def configure_logging() -> None:
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Логирует необработанные ошибки и сообщает пользователю о сбое."""
 
+    if isinstance(context.error, Conflict):
+        log = logging.getLogger(__name__)
+        log.warning(
+            "Conflict: к боту одновременно подключается больше одного экземпляра (getUpdates). "
+            "Запускайте бота только в одном месте: либо на сервере, либо локально."
+        )
+        return
+
     logging.getLogger(__name__).exception("Необработанная ошибка бота", exc_info=context.error)
 
     if isinstance(update, Update) and update.effective_chat:
@@ -64,7 +73,14 @@ def build_application() -> Application:
 
     # Стандартный способ инициализации приложения в python-telegram-bot v20+.
     # Для Python 3.13 требуется свежая версия библиотеки (см. requirements.txt).
-    application = Application.builder().token(settings.bot_token).build()
+    application = (
+        Application.builder()
+        .token(settings.bot_token)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .build()
+    )
 
     application.add_handler(admin_handlers.build())
     application.add_handler(user_handlers.build())
