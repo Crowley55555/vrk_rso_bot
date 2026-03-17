@@ -57,6 +57,7 @@ class AdminTaskHandler(BaseHandler):
                 AdminStates.ADD_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_responsible)],
                 AdminStates.ADD_FULL_NAME: [MessageHandler(user_text_filter, self.receive_full_name)],
                 AdminStates.ADD_DEADLINE: [MessageHandler(user_text_filter, self.finish_add_task)],
+                AdminStates.EDIT_TASK_NAME: [MessageHandler(user_text_filter, self.receive_edit_task_name)],
                 AdminStates.EDIT_COMMENTS: [MessageHandler(user_text_filter, self.receive_edit_comment)],
                 AdminStates.EDIT_DEADLINE: [MessageHandler(user_text_filter, self.receive_edit_deadline)],
                 AdminStates.EDIT_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_edit_responsible)],
@@ -161,7 +162,7 @@ class AdminTaskHandler(BaseHandler):
         return ConversationHandler.END
 
     async def start_edit_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Запускает редактирование комментария и срока (и ответственных для листа «В работе»)."""
+        """Запускает редактирование названия, комментария, срока и ответственных."""
 
         query = update.callback_query
         await query.answer()
@@ -193,6 +194,7 @@ class AdminTaskHandler(BaseHandler):
         flow_data = {
             "sheet_key": sheet_key,
             "row_index": row_index,
+            "current_task_name": task.task_name,
             "current_comments": task.comments,
             "current_deadline": task.deadline,
         }
@@ -202,6 +204,14 @@ class AdminTaskHandler(BaseHandler):
         context.user_data["flow_data"] = flow_data
 
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        await self._ask_edit_task_name(update, context)
+        return AdminStates.EDIT_TASK_NAME
+
+    async def receive_edit_task_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Принимает новое название задачи и спрашивает комментарий."""
+
+        context.user_data.setdefault("flow_data", {})["new_task_name"] = update.message.text.strip()
+        await self.message_manager.delete_step_messages(update, context)
         await self._ask_edit_comments(update, context)
         return AdminStates.EDIT_COMMENTS
 
@@ -236,19 +246,27 @@ class AdminTaskHandler(BaseHandler):
         return await self._apply_edit_and_finish(update, context)
 
     async def _apply_edit_and_finish(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Применяет изменения комментария, срока и (для Sheet 2) ответственных и завершает редактирование."""
+        """Применяет изменения названия, комментария, срока и ответственных и завершает редактирование."""
 
         flow_data = context.user_data.setdefault("flow_data", {})
+        new_task_name = (
+            flow_data["current_task_name"]
+            if flow_data.get("new_task_name") == "-"
+            else flow_data.get("new_task_name", flow_data["current_task_name"])
+        )
         new_comments = flow_data["current_comments"] if flow_data.get("new_comments") == "-" else flow_data.get("new_comments", flow_data["current_comments"])
         new_deadline = flow_data["current_deadline"] if flow_data.get("new_deadline") == "-" else flow_data.get("new_deadline", flow_data["current_deadline"])
         sheet_name = self._sheet_name(flow_data["sheet_key"])
         row_index = int(flow_data["row_index"])
 
         current_task = context.user_data.get("current_task") or {}
-        task_name = current_task.get("B") or ""
 
         changes: list[str] = []
         try:
+            if new_task_name != flow_data["current_task_name"]:
+                await update_cell(sheet_name, row_index, 2, new_task_name)
+                current_task["B"] = new_task_name
+                changes.append(f'Название: "{flow_data["current_task_name"]}" → "{new_task_name}"')
             if new_comments != flow_data["current_comments"]:
                 await update_cell(sheet_name, row_index, 3, new_comments)
                 current_task["C"] = new_comments
@@ -269,7 +287,13 @@ class AdminTaskHandler(BaseHandler):
 
         details = "; ".join(changes) if changes else "Изменений не внесено"
         who = get_user_display_name(update.effective_user)
-        await write_log(who, "Редактирование задачи", task_name, sheet_name, details)
+        await write_log(
+            who,
+            "Редактирование задачи",
+            current_task.get("B") or flow_data["current_task_name"],
+            sheet_name,
+            details,
+        )
 
         context.user_data["current_task"] = current_task
         context.user_data.pop("flow_data", None)
@@ -750,11 +774,15 @@ class AdminTaskHandler(BaseHandler):
             return AdminStates.ADD_FULL_NAME
 
         if mode == "edit":
-            if current_state == AdminStates.EDIT_COMMENTS:
+            if current_state == AdminStates.EDIT_TASK_NAME:
                 context.user_data.pop("flow_data", None)
                 context.user_data.pop("flow_mode", None)
                 await self.show_main_menu(update, context)
                 return ConversationHandler.END
+            if current_state == AdminStates.EDIT_COMMENTS:
+                flow_data.pop("new_task_name", None)
+                await self._ask_edit_task_name(update, context)
+                return AdminStates.EDIT_TASK_NAME
             if current_state == AdminStates.EDIT_DEADLINE:
                 flow_data.pop("new_comments", None)
                 await self._ask_edit_comments(update, context)
@@ -858,6 +886,25 @@ class AdminTaskHandler(BaseHandler):
         if value is None or str(value).strip() == "":
             return "\\(не заполнено\\)"
         return TextFormatter.escape(str(value).strip())
+
+    async def _ask_edit_task_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.EDIT_TASK_NAME
+        current_task = context.user_data.get("current_task") or {}
+        current_b = current_task.get("B") or ""
+        display = self._format_edit_current_value(current_b)
+        text = (
+            "✏️ Редактирование названия задачи\n\n"
+            "Текущее значение:\n"
+            f"{display}\n\n"
+            "Введите новое название или «\\-» чтобы оставить без изменений\\."
+        )
+        await self.send_preformatted_text(
+            update,
+            context,
+            text,
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
 
     async def _ask_edit_comments(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["current_state"] = AdminStates.EDIT_COMMENTS
