@@ -6,6 +6,7 @@ from datetime import datetime
 
 from telegram import Message, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 
@@ -86,6 +87,17 @@ class MessageManager:
         if update.message:
             self.remember_message(context, update.message.message_id)
 
+    def forget_message(self, context: ContextTypes.DEFAULT_TYPE, message_id: int | None) -> None:
+        """Удаляет ID сообщения из внутреннего хранилища текущей сессии."""
+
+        if message_id is None:
+            return
+
+        storage = self.ensure_storage(context)
+        context.user_data[self.STORAGE_KEY] = [stored_id for stored_id in storage if stored_id != message_id]
+        if context.user_data.get(self.LAST_BOT_MESSAGE_KEY) == message_id:
+            context.user_data[self.LAST_BOT_MESSAGE_KEY] = None
+
     async def delete_message(
         self,
         chat_id: int,
@@ -99,6 +111,10 @@ class MessageManager:
 
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            self.forget_message(context, message_id)
+        except BadRequest as error:  # pragma: no cover - зависит от Telegram API
+            self.forget_message(context, message_id)
+            logger.debug("Сообщение %s не удалено: %s", message_id, error)
         except Exception as error:  # pragma: no cover - зависит от Telegram API
             logger.debug("Сообщение %s не удалено: %s", message_id, error)
 
