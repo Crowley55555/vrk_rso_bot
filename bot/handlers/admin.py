@@ -152,6 +152,70 @@ class AdminTaskHandler(BaseHandler):
 
         await self._show_task_list_for_sheet(update, context, "accidents")
 
+    async def show_task_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает карточку выбранной задачи или аварии внутри админского сценария."""
+
+        query = update.callback_query
+        await query.answer()
+
+        _, sheet_key, row_index_raw = query.data.split("_", maxsplit=2)
+        row_index = int(row_index_raw)
+
+        try:
+            task = await self.fetch_task(sheet_key, row_index)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить задачу из Google Sheets.")
+            return
+
+        if task is None:
+            await self.message_manager.cleanup_session(update.effective_chat.id, context)
+            await self.send_text(
+                update,
+                context,
+                (
+                    "Авария не найдена. Возможно, она уже была изменена."
+                    if sheet_key == "accidents"
+                    else "Задача не найдена. Возможно, она уже была изменена."
+                ),
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        context.user_data["selected_task"] = {
+            "sheet_key": sheet_key,
+            "row_index": row_index,
+        }
+        context.user_data["current_task"] = {
+            "sheet_name": task.sheet_name,
+            "sheet_key": sheet_key,
+            "row_index": row_index,
+            "A": task.date or "",
+            "B": task.task_name or "",
+            "C": task.comments or "",
+            "D": task.responsible or "",
+            "E": task.deadline or "",
+            "F": task.added_by or "",
+        }
+
+        if sheet_key == "accidents":
+            context.user_data["flow_mode"] = "accidents_menu"
+
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        await self.send_preformatted_text(
+            update,
+            context,
+            TextFormatter.task_details(task),
+            reply_markup=KeyboardFactory.task_detail_keyboard(
+                sheet_key, row_index, is_admin=True
+            ),
+        )
+        await self.send_text(
+            update,
+            context,
+            "Используйте кнопки ниже для навигации",
+            reply_markup=KeyboardFactory.navigation_menu(),
+        )
+
     async def show_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показывает последние записи листа 'Лог'."""
 
