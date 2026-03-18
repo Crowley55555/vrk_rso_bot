@@ -6,7 +6,11 @@ from typing import Any
 
 import gspread
 
-from bot.config import LOG_SHEET, Settings
+from bot.config import ACCIDENTS_SHEET, LOG_SHEET, Settings
+
+
+SHEET_ACCIDENTS = ACCIDENTS_SHEET
+SHEET_LOG = LOG_SHEET
 
 
 logger = logging.getLogger(__name__)

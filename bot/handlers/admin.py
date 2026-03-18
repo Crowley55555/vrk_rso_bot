@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
-from bot.config import COMPLETED_SHEET, IN_PROGRESS_SHEET, NOT_STARTED_SHEET, Settings, SHEET_KEY_TO_NAME
+from bot.config import ACCIDENTS_SHEET, COMPLETED_SHEET, IN_PROGRESS_SHEET, LOG_SHEET, NOT_STARTED_SHEET, Settings, SHEET_KEY_TO_NAME
 from bot.keyboards import KeyboardFactory
 from bot.sheets import (
     SheetsServiceError,
@@ -46,9 +46,10 @@ class AdminTaskHandler(BaseHandler):
         return ConversationHandler(
             entry_points=[
                 MessageHandler(filters.Regex(ADD_TASK_PATTERN) & admin_filter, self.start_add_task),
-                CallbackQueryHandler(self.start_edit_task, pattern=r"^edit_(todo|progress|done)_\d+$"),
-                CallbackQueryHandler(self.start_take_in_work, pattern=r"^take_(todo)_\d+$"),
+                CallbackQueryHandler(self.start_edit_task, pattern=r"^edit_(todo|progress|done|accidents)_\d+$"),
+                CallbackQueryHandler(self.start_take_in_work, pattern=r"^take_(todo|accidents)_\d+$"),
                 CallbackQueryHandler(self.complete_task, pattern=r"^complete_(progress)_\d+$"),
+                CallbackQueryHandler(self.complete_accident, pattern=r"^complete_accident_\d+$"),
                 CallbackQueryHandler(self.mark_done_from_todo, pattern=r"^mark_done_\d+$"),
             ],
             states={
@@ -61,6 +62,8 @@ class AdminTaskHandler(BaseHandler):
                 AdminStates.EDIT_COMMENTS: [MessageHandler(user_text_filter, self.receive_edit_comment)],
                 AdminStates.EDIT_DEADLINE: [MessageHandler(user_text_filter, self.receive_edit_deadline)],
                 AdminStates.EDIT_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_edit_responsible)],
+                AdminStates.EDIT_ACCIDENT_C: [MessageHandler(user_text_filter, self.receive_edit_accident_description)],
+                AdminStates.EDIT_ACCIDENT_E: [MessageHandler(user_text_filter, self.receive_edit_accident_urgency)],
                 AdminStates.TAKE_IN_WORK_COMMENTS: [MessageHandler(user_text_filter, self.receive_take_comment)],
                 AdminStates.TAKE_IN_WORK_RESPONSIBLE: [
                     MessageHandler(user_text_filter, self.finish_take_in_work)
@@ -74,6 +77,108 @@ class AdminTaskHandler(BaseHandler):
             name="admin_task_conversation",
             persistent=False,
         )
+
+    async def show_accident_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает список аварий."""
+
+        await self._show_task_list_for_sheet(update, context, "accidents")
+
+    async def show_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает последние записи листа 'Лог'."""
+
+        try:
+            rows = await get_all_tasks(LOG_SHEET)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить лог.")
+            return
+
+        context.user_data["current_state"] = AdminStates.VIEW_LOGS
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+
+        if not rows:
+            await self.send_text(
+                update,
+                context,
+                "Лог пуст",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        latest_rows = list(reversed(rows))[:50]
+        payload = [
+            {
+                "row_index": int(row["row_index"]),
+                "title": f"{row.get('Дата и время', '')} | {row.get('Действие', '')}",
+            }
+            for row in latest_rows
+        ]
+
+        await self.send_text(
+            update,
+            context,
+            "Выберите запись лога",
+            reply_markup=KeyboardFactory.log_list_keyboard(payload),
+        )
+        await self.send_text(
+            update,
+            context,
+            "Используйте кнопки ниже для навигации",
+            reply_markup=KeyboardFactory.navigation_menu(),
+        )
+
+    async def show_log_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает карточку выбранной записи лога."""
+
+        query = update.callback_query
+        await query.answer()
+        row_index = int(query.data.split("_")[-1])
+
+        try:
+            row = await self._fetch_row(LOG_SHEET, row_index)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить запись лога.")
+            return
+        if row is None:
+            await self.message_manager.cleanup_session(update.effective_chat.id, context)
+            await self.send_text(
+                update,
+                context,
+                "Запись лога не найдена.",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
+            return
+
+        text = (
+            "📊 *Запись лога*\n\n"
+            f"📅 Дата и время: {TextFormatter.escape(row.get('Дата и время', ''))}\n"
+            f"👤 Кто: {TextFormatter.escape(row.get('Кто', ''))}\n"
+            f"⚙️ Действие: {TextFormatter.escape(row.get('Действие', ''))}\n"
+            f"📌 Задача\\/Авария: {TextFormatter.escape(row.get('Задача', ''))}\n"
+            f"📋 Лист: {TextFormatter.escape(row.get('Лист', ''))}\n"
+            f"📝 Подробности: {TextFormatter.escape(row.get('Подробности', ''))}"
+        )
+
+        context.user_data["current_state"] = AdminStates.VIEW_LOG_DETAIL
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        await self.send_preformatted_text(
+            update,
+            context,
+            text,
+            reply_markup=KeyboardFactory.back_to_logs_keyboard(),
+        )
+        await self.send_text(
+            update,
+            context,
+            "Используйте кнопки ниже для навигации",
+            reply_markup=KeyboardFactory.navigation_menu(),
+        )
+
+    async def back_to_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Возвращает администратора к списку логов."""
+
+        if update.callback_query:
+            await update.callback_query.answer()
+        await self.show_logs(update, context)
 
     async def start_add_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Запускает административный сценарий добавления задачи."""
@@ -177,7 +282,12 @@ class AdminTaskHandler(BaseHandler):
 
         if task is None:
             await self.message_manager.cleanup_session(update.effective_chat.id, context)
-            await self.send_text(update, context, "Задача не найдена", reply_markup=KeyboardFactory.home_only_menu())
+            await self.send_text(
+                update,
+                context,
+                "Авария не найдена" if sheet_key == "accidents" else "Задача не найдена",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
             return ConversationHandler.END
 
         context.user_data["current_task"] = {
@@ -191,6 +301,18 @@ class AdminTaskHandler(BaseHandler):
             "E": task.deadline or "",
             "F": task.added_by or "",
         }
+        if sheet_key == "accidents":
+            context.user_data["flow_mode"] = "edit_accident"
+            context.user_data["flow_data"] = {
+                "sheet_key": sheet_key,
+                "row_index": row_index,
+                "current_description": task.comments,
+                "current_urgency": task.deadline,
+            }
+            await self.message_manager.cleanup_session(update.effective_chat.id, context)
+            await self._ask_edit_accident_description(update, context)
+            return AdminStates.EDIT_ACCIDENT_C
+
         flow_data = {
             "sheet_key": sheet_key,
             "row_index": row_index,
@@ -244,6 +366,69 @@ class AdminTaskHandler(BaseHandler):
         flow_data["new_responsible"] = update.message.text.strip()
         await self.message_manager.delete_step_messages(update, context)
         return await self._apply_edit_and_finish(update, context)
+
+    async def receive_edit_accident_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Принимает новое подробное описание аварии и спрашивает срочность."""
+
+        context.user_data.setdefault("flow_data", {})["new_description"] = update.message.text.strip()
+        await self.message_manager.delete_step_messages(update, context)
+        await self._ask_edit_accident_urgency(update, context)
+        return AdminStates.EDIT_ACCIDENT_E
+
+    async def receive_edit_accident_urgency(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Принимает новую срочность аварии и завершает редактирование."""
+
+        context.user_data.setdefault("flow_data", {})["new_urgency"] = update.message.text.strip()
+        await self.message_manager.delete_step_messages(update, context)
+        return await self._apply_accident_edit_and_finish(update, context)
+
+    async def _apply_accident_edit_and_finish(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Применяет изменения подробного описания и срочности аварии."""
+
+        flow_data = context.user_data.setdefault("flow_data", {})
+        new_description = (
+            flow_data["current_description"]
+            if flow_data.get("new_description") == "-"
+            else flow_data.get("new_description", flow_data["current_description"])
+        )
+        new_urgency = (
+            flow_data["current_urgency"]
+            if flow_data.get("new_urgency") == "-"
+            else flow_data.get("new_urgency", flow_data["current_urgency"])
+        )
+        row_index = int(flow_data["row_index"])
+        current_task = context.user_data.get("current_task") or {}
+
+        changes: list[str] = []
+        try:
+            if new_description != flow_data["current_description"]:
+                await update_cell(ACCIDENTS_SHEET, row_index, 3, new_description)
+                current_task["C"] = new_description
+                changes.append(f'Подробное описание: "{flow_data["current_description"]}" → "{new_description}"')
+            if new_urgency != flow_data["current_urgency"]:
+                await update_cell(ACCIDENTS_SHEET, row_index, 5, new_urgency)
+                current_task["E"] = new_urgency
+                changes.append(f'Срочность: "{flow_data["current_urgency"]}" → "{new_urgency}"')
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось обновить аварию.")
+            return ConversationHandler.END
+
+        details = "; ".join(changes) if changes else "Изменений не внесено"
+        who = get_user_display_name(update.effective_user)
+        await write_log(
+            who,
+            "Редактирование аварии",
+            current_task.get("B") or "",
+            ACCIDENTS_SHEET,
+            details,
+        )
+
+        context.user_data["current_task"] = current_task
+        context.user_data.pop("flow_data", None)
+        context.user_data.pop("flow_mode", None)
+        await self.send_text(update, context, "Авария успешно обновлена")
+        await self.show_main_menu(update, context)
+        return ConversationHandler.END
 
     async def _apply_edit_and_finish(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Применяет изменения названия, комментария, срока и ответственных и завершает редактирование."""
@@ -386,7 +571,7 @@ class AdminTaskHandler(BaseHandler):
             await self.send_text(
                 update,
                 context,
-                "Задача не найдена.",
+                "Авария не найдена." if sheet_key == "accidents" else "Задача не найдена.",
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
@@ -399,9 +584,11 @@ class AdminTaskHandler(BaseHandler):
         except Exception:
             pass
 
+        entity_name = "аварию" if sheet_key == "accidents" else "задачу"
+        marker = "🚨" if sheet_key == "accidents" else "📌"
         confirmation_text = (
-            "⚠️ Вы уверены, что хотите удалить задачу\\?\n\n"
-            "📌 " + TextFormatter.escape(task.task_name) + "\n\n"
+            f"⚠️ Вы уверены, что хотите удалить {entity_name}\\?\n\n"
+            f"{marker} " + TextFormatter.escape(task.task_name) + "\n\n"
             "Это действие необратимо\\."
         )
         msg = await context.bot.send_message(
@@ -441,7 +628,7 @@ class AdminTaskHandler(BaseHandler):
             await self.send_text(
                 update,
                 context,
-                "Задача не найдена.",
+                "Авария не найдена." if sheet_key == "accidents" else "Задача не найдена.",
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
@@ -466,7 +653,10 @@ class AdminTaskHandler(BaseHandler):
             return
 
         who = get_user_display_name(update.effective_user)
-        await write_log(who, "Задача удалена", task_name, sheet_name, "Удалено администратором")
+        if sheet_key == "accidents":
+            await write_log(who, "Авария удалена", task_name, ACCIDENTS_SHEET, "Удалено администратором")
+        else:
+            await write_log(who, "Задача удалена", task_name, sheet_name, "Удалено администратором")
 
         try:
             await context.bot.delete_message(
@@ -479,7 +669,7 @@ class AdminTaskHandler(BaseHandler):
         await self.send_text(
             update,
             context,
-            "🗑 Задача удалена.",
+            "🗑 Авария удалена." if sheet_key == "accidents" else "🗑 Задача удалена.",
         )
 
         await asyncio.sleep(1.5)
@@ -526,7 +716,7 @@ class AdminTaskHandler(BaseHandler):
             await self.send_text(
                 update,
                 context,
-                "Задача не найдена.",
+                "Авария не найдена." if sheet_key == "accidents" else "Задача не найдена.",
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
@@ -572,7 +762,7 @@ class AdminTaskHandler(BaseHandler):
             await self.send_text(
                 update,
                 context,
-                "Список задач пуст",
+                "Список аварий пуст" if sheet_key == "accidents" else "Список задач пуст",
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
@@ -581,7 +771,7 @@ class AdminTaskHandler(BaseHandler):
         latest_tasks = task_views[-30:]
         note = ""
         if len(task_views) > 30:
-            note = "\n\nПоказаны последние 30 задач"
+            note = "\n\nПоказаны последние 30 аварий" if sheet_key == "accidents" else "\n\nПоказаны последние 30 задач"
         payload = [
             {"task_name": t.task_name or "Без названия", "row_index": t.row_index}
             for t in latest_tasks
@@ -589,7 +779,7 @@ class AdminTaskHandler(BaseHandler):
         await self.send_text(
             update,
             context,
-            f"Выберите задачу{note}",
+            f"{'Выберите аварию' if sheet_key == 'accidents' else 'Выберите задачу'}{note}",
             reply_markup=KeyboardFactory.task_list_keyboard(payload, sheet_key),
         )
         await self.send_text(
@@ -615,8 +805,27 @@ class AdminTaskHandler(BaseHandler):
 
         if task is None:
             await self.message_manager.cleanup_session(update.effective_chat.id, context)
-            await self.send_text(update, context, "Задача не найдена", reply_markup=KeyboardFactory.home_only_menu())
+            await self.send_text(
+                update,
+                context,
+                "Авария не найдена" if sheet_key == "accidents" else "Задача не найдена",
+                reply_markup=KeyboardFactory.home_only_menu(),
+            )
             return ConversationHandler.END
+
+        if sheet_key == "accidents":
+            context.user_data["flow_mode"] = "take_accident_in_work"
+            context.user_data["flow_data"] = {
+                "sheet_key": sheet_key,
+                "row_index": row_index,
+                "task_name": task.task_name,
+                "current_comments": task.comments,
+                "deadline": task.deadline,
+                "added_by": task.added_by,
+            }
+            await self.message_manager.cleanup_session(update.effective_chat.id, context)
+            await self._ask_take_responsible(update, context)
+            return AdminStates.TAKE_IN_WORK_RESPONSIBLE
 
         context.user_data["flow_mode"] = "take_in_work"
         context.user_data["flow_data"] = {
@@ -645,6 +854,45 @@ class AdminTaskHandler(BaseHandler):
 
         flow_data = context.user_data.setdefault("flow_data", {})
         responsible = update.message.text.strip()
+
+        if context.user_data.get("flow_mode") == "take_accident_in_work":
+            row_data = [
+                self.now_date(),
+                flow_data["task_name"],
+                flow_data["current_comments"],
+                responsible,
+                flow_data["deadline"],
+                flow_data["added_by"],
+            ]
+
+            try:
+                await move_task(
+                    ACCIDENTS_SHEET,
+                    IN_PROGRESS_SHEET,
+                    int(flow_data["row_index"]),
+                    {"row_data": row_data},
+                )
+            except SheetsServiceError:
+                await self.message_manager.delete_step_messages(update, context)
+                await self.show_error(update, context, "Не удалось перевести аварию в работу.")
+                return ConversationHandler.END
+
+            who = get_user_display_name(update.effective_user)
+            await write_log(
+                who,
+                "Авария взята в работу",
+                flow_data["task_name"],
+                "Аварии → В работе",
+                f"Ответственные: {responsible}",
+            )
+
+            await self.message_manager.delete_step_messages(update, context)
+            context.user_data.pop("flow_data", None)
+            context.user_data.pop("flow_mode", None)
+            await self.send_text(update, context, "Авария переведена в статус «В работе»")
+            await self.show_main_menu(update, context)
+            return ConversationHandler.END
+
         comments = (
             flow_data["current_comments"]
             if flow_data["take_comments"] == "-"
@@ -685,6 +933,58 @@ class AdminTaskHandler(BaseHandler):
         context.user_data.pop("flow_data", None)
         context.user_data.pop("flow_mode", None)
         await self.send_text(update, context, "Задача переведена в статус «В работе»")
+        await self.show_main_menu(update, context)
+        return ConversationHandler.END
+
+    async def complete_accident(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Переводит аварию из листа 'Аварии' в лист 'Выполненные'."""
+
+        query = update.callback_query
+        await query.answer()
+        row_index = int(query.data.split("_")[-1])
+
+        try:
+            task = await self.fetch_task("accidents", row_index)
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось загрузить аварию для завершения.")
+            return ConversationHandler.END
+
+        if task is None:
+            await self.message_manager.cleanup_session(update.effective_chat.id, context)
+            await self.send_text(update, context, "Авария не найдена", reply_markup=KeyboardFactory.home_only_menu())
+            return ConversationHandler.END
+
+        row_data = [
+            self.now_date(),
+            task.task_name,
+            task.comments,
+            task.responsible,
+            task.deadline,
+            task.added_by,
+        ]
+
+        try:
+            await move_task(
+                ACCIDENTS_SHEET,
+                COMPLETED_SHEET,
+                row_index,
+                {"row_data": row_data},
+            )
+        except SheetsServiceError:
+            await self.show_error(update, context, "Не удалось отметить аварию как выполненную.")
+            return ConversationHandler.END
+
+        who = get_user_display_name(update.effective_user)
+        await write_log(
+            who,
+            "Авария выполнена",
+            task.task_name,
+            "Аварии → Выполненные",
+            f"Ответственные: {task.responsible}",
+        )
+
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        await self.send_text(update, context, "Авария отмечена как выполненная")
         await self.show_main_menu(update, context)
         return ConversationHandler.END
 
@@ -792,6 +1092,17 @@ class AdminTaskHandler(BaseHandler):
                 await self._ask_edit_deadline(update, context)
                 return AdminStates.EDIT_DEADLINE
 
+        if mode == "edit_accident":
+            if current_state == AdminStates.EDIT_ACCIDENT_C:
+                context.user_data.pop("flow_data", None)
+                context.user_data.pop("flow_mode", None)
+                await self.show_main_menu(update, context)
+                return ConversationHandler.END
+            if current_state == AdminStates.EDIT_ACCIDENT_E:
+                flow_data.pop("new_description", None)
+                await self._ask_edit_accident_description(update, context)
+                return AdminStates.EDIT_ACCIDENT_C
+
         if mode == "take_in_work":
             if current_state == AdminStates.TAKE_IN_WORK_COMMENTS:
                 context.user_data.pop("flow_data", None)
@@ -802,6 +1113,12 @@ class AdminTaskHandler(BaseHandler):
             flow_data.pop("take_comments", None)
             await self._ask_take_comment(update, context)
             return AdminStates.TAKE_IN_WORK_COMMENTS
+
+        if mode == "take_accident_in_work":
+            context.user_data.pop("flow_data", None)
+            context.user_data.pop("flow_mode", None)
+            await self.show_main_menu(update, context)
+            return ConversationHandler.END
 
         await self.show_main_menu(update, context)
         return ConversationHandler.END
@@ -963,6 +1280,44 @@ class AdminTaskHandler(BaseHandler):
             remember_as_last=True,
         )
 
+    async def _ask_edit_accident_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.EDIT_ACCIDENT_C
+        current_task = context.user_data.get("current_task") or {}
+        current_c = current_task.get("C") or ""
+        display = self._format_edit_current_value(current_c)
+        text = (
+            "✏️ *Редактирование подробного описания*\n\n"
+            "Текущее значение:\n"
+            f"{display}\n\n"
+            "Введите новое описание или «\\-» чтобы оставить без изменений\\."
+        )
+        await self.send_preformatted_text(
+            update,
+            context,
+            text,
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_edit_accident_urgency(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.EDIT_ACCIDENT_E
+        current_task = context.user_data.get("current_task") or {}
+        current_e = current_task.get("E") or ""
+        display = self._format_edit_current_value(current_e)
+        text = (
+            "✏️ *Редактирование срочности*\n\n"
+            "Текущее значение:\n"
+            f"{display}\n\n"
+            "Введите новое значение или «\\-» чтобы оставить без изменений\\."
+        )
+        await self.send_preformatted_text(
+            update,
+            context,
+            text,
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
     async def _ask_take_comment(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data["current_state"] = AdminStates.TAKE_IN_WORK_COMMENTS
         await self.send_text(
@@ -989,4 +1344,15 @@ class AdminTaskHandler(BaseHandler):
             return NOT_STARTED_SHEET
         if sheet_key == "progress":
             return IN_PROGRESS_SHEET
+        if sheet_key == "accidents":
+            return ACCIDENTS_SHEET
         return COMPLETED_SHEET
+
+    async def _fetch_row(self, sheet_name: str, row_index: int) -> dict | None:
+        """Возвращает сырую строку листа по номеру строки."""
+
+        rows = await get_all_tasks(sheet_name)
+        for row in rows:
+            if int(row["row_index"]) == row_index:
+                return row
+        return None

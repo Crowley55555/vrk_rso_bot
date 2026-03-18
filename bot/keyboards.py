@@ -3,9 +3,12 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from bot.config import (
+    ACCIDENTS_BUTTON,
     ADD_TASK_BUTTON,
     BACK_BUTTON,
     HOME_BUTTON,
+    LOGS_BUTTON,
+    REPORT_ACCIDENT_BUTTON,
     TASKS_DONE_BUTTON,
     TASKS_IN_PROGRESS_BUTTON,
     TASKS_TODO_BUTTON,
@@ -24,6 +27,7 @@ class KeyboardFactory:
                 [KeyboardButton(ADD_TASK_BUTTON)],
                 [KeyboardButton(TASKS_TODO_BUTTON), KeyboardButton(TASKS_IN_PROGRESS_BUTTON)],
                 [KeyboardButton(TASKS_DONE_BUTTON)],
+                [KeyboardButton(ACCIDENTS_BUTTON), KeyboardButton(LOGS_BUTTON)],
             ],
             resize_keyboard=True,
         )
@@ -33,7 +37,7 @@ class KeyboardFactory:
         """Возвращает главное меню обычного пользователя."""
 
         return ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(ADD_TASK_BUTTON)]],
+            keyboard=[[KeyboardButton(REPORT_ACCIDENT_BUTTON)]],
             resize_keyboard=True,
         )
 
@@ -101,11 +105,23 @@ class KeyboardFactory:
                     )
                 ]
             )
+        if sheet_key == "accidents":
+            keyboard.append(
+                [InlineKeyboardButton("▶️ Взять в работу", callback_data=f"take_accident_{row_index}")]
+            )
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "✅ Отметить как выполненная",
+                        callback_data=f"complete_accident_{row_index}",
+                    )
+                ]
+            )
         if is_admin:
             keyboard.append(
                 [
                     InlineKeyboardButton(
-                        "🗑 Удалить задачу",
+                        "🗑 Удалить аварию" if sheet_key == "accidents" else "🗑 Удалить задачу",
                         callback_data=f"delete_task_{sheet_key}_{row_index}",
                     )
                 ]
@@ -129,6 +145,29 @@ class KeyboardFactory:
                     ),
                 ]
             ]
+        )
+
+    @staticmethod
+    def log_list_keyboard(logs: list[dict]) -> InlineKeyboardMarkup:
+        """Создаёт inline-клавиатуру со списком записей лога."""
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text=log["title"],
+                    callback_data=f"log_{log['row_index']}",
+                )
+            ]
+            for log in logs
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    @staticmethod
+    def back_to_logs_keyboard() -> InlineKeyboardMarkup:
+        """Клавиатура возврата к списку логов."""
+
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("◀️ Назад к логам", callback_data="back_to_logs")]]
         )
 
     @staticmethod

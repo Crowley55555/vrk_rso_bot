@@ -10,18 +10,23 @@ from dotenv import load_dotenv
 NOT_STARTED_SHEET = "Не начатые"
 IN_PROGRESS_SHEET = "В работе"
 COMPLETED_SHEET = "Выполненные"
+ACCIDENTS_SHEET = "Аварии"
 LOG_SHEET = "Лог"
 
 SHEET_KEY_TO_NAME = {
     "todo": NOT_STARTED_SHEET,
     "progress": IN_PROGRESS_SHEET,
     "done": COMPLETED_SHEET,
+    "accidents": ACCIDENTS_SHEET,
 }
 
 ADD_TASK_BUTTON = "➕ Добавить задачу"
+REPORT_ACCIDENT_BUTTON = "🚨 Сообщить об аварии"
 TASKS_TODO_BUTTON = "📋 Задачи к выполнению"
 TASKS_IN_PROGRESS_BUTTON = "🔄 В работе"
 TASKS_DONE_BUTTON = "✅ Выполненные задачи"
+ACCIDENTS_BUTTON = "🚨 Аварии"
+LOGS_BUTTON = "📊 Логи"
 BACK_BUTTON = "◀️ Назад"
 HOME_BUTTON = "🏠 Главное меню"
 

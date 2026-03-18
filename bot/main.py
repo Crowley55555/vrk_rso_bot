@@ -12,8 +12,10 @@ from telegram.error import Conflict
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.config import (
+    ACCIDENTS_BUTTON,
     BACK_BUTTON,
     HOME_BUTTON,
+    LOGS_BUTTON,
     TASKS_DONE_BUTTON,
     TASKS_IN_PROGRESS_BUTTON,
     TASKS_TODO_BUTTON,
@@ -100,9 +102,21 @@ def build_application() -> Application:
     application.add_handler(
         MessageHandler(filters.Regex(rf"^{TASKS_DONE_BUTTON}$") & admin_filter, common_handlers.show_done_tasks)
     )
+    application.add_handler(
+        MessageHandler(filters.Regex(rf"^{ACCIDENTS_BUTTON}$") & admin_filter, admin_handlers.show_accident_tasks)
+    )
+    application.add_handler(
+        MessageHandler(filters.Regex(rf"^{LOGS_BUTTON}$") & admin_filter, admin_handlers.show_logs)
+    )
 
     application.add_handler(
-        CallbackQueryHandler(common_handlers.show_task_card, pattern=r"^task_(todo|progress|done)_\d+$")
+        CallbackQueryHandler(common_handlers.show_task_card, pattern=r"^task_(todo|progress|done|accidents)_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(admin_handlers.show_log_detail, pattern=r"^log_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(admin_handlers.back_to_logs, pattern=r"^back_to_logs$")
     )
     application.add_handler(
         CallbackQueryHandler(common_handlers.go_home_inline_callback, pattern=r"^home_menu$")
@@ -110,19 +124,19 @@ def build_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             admin_handlers.show_delete_confirmation,
-            pattern=r"^delete_task_(todo|progress|done)_\d+$",
+            pattern=r"^delete_task_(todo|progress|done|accidents)_\d+$",
         )
     )
     application.add_handler(
         CallbackQueryHandler(
             admin_handlers.confirm_delete_task,
-            pattern=r"^confirm_delete_(todo|progress|done)_\d+$",
+            pattern=r"^confirm_delete_(todo|progress|done|accidents)_\d+$",
         )
     )
     application.add_handler(
         CallbackQueryHandler(
             admin_handlers.cancel_delete_task,
-            pattern=r"^cancel_delete_(todo|progress|done)_\d+$",
+            pattern=r"^cancel_delete_(todo|progress|done|accidents)_\d+$",
         )
     )
 

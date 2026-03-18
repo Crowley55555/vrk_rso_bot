@@ -10,12 +10,16 @@ from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 
 from bot.config import (
+    ACCIDENTS_BUTTON,
     ADD_TASK_BUTTON,
     BACK_BUTTON,
+    ACCIDENTS_SHEET,
     COMPLETED_SHEET,
     HOME_BUTTON,
     IN_PROGRESS_SHEET,
+    LOGS_BUTTON,
     NOT_STARTED_SHEET,
+    REPORT_ACCIDENT_BUTTON,
     Settings,
     SHEET_KEY_TO_NAME,
     TASKS_DONE_BUTTON,
@@ -133,6 +137,17 @@ class TextFormatter:
     def task_details(cls, task: TaskView) -> str:
         """Форматирует карточку задачи."""
 
+        if task.sheet_key == "accidents":
+            lines = [
+                f"🚨 *{cls.escape(task.task_name)}*",
+                f"📅 Дата: {cls.escape(task.date)}",
+                f"📝 Подробное описание: {cls.escape(task.comments)}",
+                f"👤 Ответственные: {cls.escape(task.responsible)}",
+                f"⚡ Срочность: {cls.escape(task.deadline)}",
+                f"👤 Кто сообщил: {cls.escape(task.added_by)}",
+            ]
+            return "\n".join(lines)
+
         lines = [
             f"📌 {cls.escape(task.task_name)}",
             f"📅 Дата: {cls.escape(task.date)}",
@@ -156,10 +171,22 @@ class TaskMapper:
             sheet_name=SHEET_KEY_TO_NAME[sheet_key],
             row_index=int(row["row_index"]),
             date=row.get("Дата добавления") or row.get("Дата") or "",
-            task_name=row.get("Наименование задачи", ""),
-            comments=row.get("Комментарии") or row.get("Коментарии") or "",
-            responsible=row.get("Ответственные", ""),
-            deadline=row.get("Срок выполнения") or row.get("Срок") or row.get("column_5") or "",
+            task_name=(
+                row.get("Краткое описание аварии, на каком участке произошла", "")
+                if sheet_key == "accidents"
+                else row.get("Наименование задачи", "")
+            ),
+            comments=(
+                row.get("Подробное описание произошедшего", "")
+                if sheet_key == "accidents"
+                else row.get("Комментарии") or row.get("Коментарии") or ""
+            ),
+            responsible=row.get("Ответственные") or row.get("column_4") or "",
+            deadline=(
+                row.get("Срочность ремонта", "")
+                if sheet_key == "accidents"
+                else row.get("Срок выполнения") or row.get("Срок") or row.get("column_5") or ""
+            ),
             added_by=row.get("Кто добавил", ""),
         )
 
@@ -322,8 +349,13 @@ class CommonHandlers(BaseHandler):
 
         await self._show_task_list(update, context, "done")
 
+    async def show_accident_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показывает список аварий из листа 'Аварии'."""
+
+        await self._show_task_list(update, context, "accidents")
+
     async def show_task_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Показывает карточку выбранной задачи."""
+        """Показывает карточку выбранной задачи или аварии."""
 
         query = update.callback_query
         await query.answer()
@@ -342,7 +374,11 @@ class CommonHandlers(BaseHandler):
             await self.send_text(
                 update,
                 context,
-                "Задача не найдена. Возможно, она уже была изменена.",
+                (
+                    "Авария не найдена. Возможно, она уже была изменена."
+                    if sheet_key == "accidents"
+                    else "Задача не найдена. Возможно, она уже была изменена."
+                ),
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
@@ -401,7 +437,7 @@ class CommonHandlers(BaseHandler):
             await self.send_text(
                 update,
                 context,
-                "Список задач пуст",
+                "Список аварий пуст" if sheet_key == "accidents" else "Список задач пуст",
                 reply_markup=KeyboardFactory.home_only_menu(),
             )
             return
@@ -411,14 +447,14 @@ class CommonHandlers(BaseHandler):
 
         note = ""
         if len(task_views) > 30:
-            note = "\n\nПоказаны последние 30 задач"
+            note = "\n\nПоказаны последние 30 аварий" if sheet_key == "accidents" else "\n\nПоказаны последние 30 задач"
 
         payload = [{"task_name": task.task_name or "Без названия", "row_index": task.row_index} for task in latest_tasks]
 
         await self.send_text(
             update,
             context,
-            f"Выберите задачу{note}",
+            f"{'Выберите аварию' if sheet_key == 'accidents' else 'Выберите задачу'}{note}",
             reply_markup=KeyboardFactory.task_list_keyboard(payload, sheet_key),
         )
         await self.send_text(
@@ -429,10 +465,14 @@ class CommonHandlers(BaseHandler):
         )
 
 
-ADMIN_MENU_PATTERN = rf"^({TASKS_TODO_BUTTON}|{TASKS_IN_PROGRESS_BUTTON}|{TASKS_DONE_BUTTON})$"
+ADMIN_MENU_PATTERN = rf"^({TASKS_TODO_BUTTON}|{TASKS_IN_PROGRESS_BUTTON}|{TASKS_DONE_BUTTON}|{ACCIDENTS_BUTTON}|{LOGS_BUTTON})$"
 ADD_TASK_PATTERN = rf"^({ADD_TASK_BUTTON}|Добавить задачу)$"
+REPORT_ACCIDENT_PATTERN = rf"^({REPORT_ACCIDENT_BUTTON}|Сообщить об аварии)$"
+ACCIDENTS_PATTERN = rf"^{ACCIDENTS_BUTTON}$"
+LOGS_PATTERN = rf"^{LOGS_BUTTON}$"
 BACK_PATTERN = rf"^{BACK_BUTTON}$"
 HOME_PATTERN = rf"^{HOME_BUTTON}$"
 NOT_STARTED_PATTERN = rf"^{NOT_STARTED_SHEET}$"
 IN_PROGRESS_PATTERN = rf"^{IN_PROGRESS_SHEET}$"
 COMPLETED_PATTERN = rf"^{COMPLETED_SHEET}$"
+ACCIDENTS_SHEET_PATTERN = rf"^{ACCIDENTS_SHEET}$"

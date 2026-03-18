@@ -2,12 +2,12 @@ from enum import IntEnum
 
 
 class UserStates(IntEnum):
-    """Состояния диалога создания задачи обычным пользователем."""
+    """Состояния сценария сообщения об аварии обычным пользователем."""
 
-    TASK_NAME = 1
-    COMMENTS = 2
-    FULL_NAME = 3
-    DEADLINE = 4
+    ACCIDENT_SHORT = 1
+    ACCIDENT_DETAIL = 2
+    ACCIDENT_WHO = 3
+    ACCIDENT_URGENCY = 4
 
 
 class AdminStates(IntEnum):
@@ -23,6 +23,11 @@ class AdminStates(IntEnum):
     EDIT_COMMENTS = 21
     EDIT_DEADLINE = 22
     EDIT_RESPONSIBLE = 23
+    EDIT_ACCIDENT_C = 24
+    EDIT_ACCIDENT_E = 25
 
     TAKE_IN_WORK_COMMENTS = 30
     TAKE_IN_WORK_RESPONSIBLE = 31
+
+    VIEW_LOGS = 40
+    VIEW_LOG_DETAIL = 41
