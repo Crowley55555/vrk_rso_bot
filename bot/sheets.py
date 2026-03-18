@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 import gspread
 
-from bot.config import ACCIDENTS_SHEET, LOG_SHEET, Settings
+from bot.config import ACCIDENTS_SHEET, APP_TIMEZONE, LOG_SHEET, Settings
 
 
 SHEET_ACCIDENTS = ACCIDENTS_SHEET
@@ -133,7 +134,11 @@ class GoogleSheetsService:
 
     def _append_task_sync(self, sheet_name: str, row_data: list[Any]) -> None:
         worksheet = self._worksheet(sheet_name)
-        worksheet.append_row(row_data, value_input_option="USER_ENTERED")
+        worksheet.append_row(
+            row_data,
+            value_input_option="USER_ENTERED",
+            table_range=self._table_range_for_row(row_data),
+        )
 
     def _update_cell_sync(self, sheet_name: str, row_index: int, col_index: int, value: Any) -> None:
         worksheet = self._worksheet(sheet_name)
@@ -152,7 +157,11 @@ class GoogleSheetsService:
     ) -> None:
         target = self._worksheet(to_sheet)
         source = self._worksheet(from_sheet)
-        target.append_row(row_data, value_input_option="USER_ENTERED")
+        target.append_row(
+            row_data,
+            value_input_option="USER_ENTERED",
+            table_range=self._table_range_for_row(row_data),
+        )
         source.delete_rows(row_index)
 
     async def write_log(
@@ -165,12 +174,10 @@ class GoogleSheetsService:
     ) -> None:
         """Записывает одну строку в лист «Лог». При ошибке пишет в лог, не прерывая сценарий."""
 
-        from datetime import datetime
-
         try:
             async with self._write_lock:
                 row = [
-                    datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+                    datetime.now(APP_TIMEZONE).strftime("%d.%m.%Y %H:%M:%S"),
                     who,
                     action,
                     task_name,
@@ -188,6 +195,26 @@ class GoogleSheetsService:
                 err,
                 exc_info=True,
             )
+
+    @staticmethod
+    def _table_range_for_row(row_data: list[Any]) -> str:
+        """Возвращает диапазон таблицы от A до последней колонки строки."""
+
+        return f"A:{GoogleSheetsService._column_letter(len(row_data))}"
+
+    @staticmethod
+    def _column_letter(column_index: int) -> str:
+        """Преобразует номер колонки в буквенное представление Google Sheets."""
+
+        if column_index < 1:
+            return "A"
+
+        result = ""
+        current = column_index
+        while current > 0:
+            current, remainder = divmod(current - 1, 26)
+            result = chr(65 + remainder) + result
+        return result
 
 
 _service: GoogleSheetsService | None = None

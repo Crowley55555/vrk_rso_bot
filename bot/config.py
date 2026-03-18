@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,6 +30,8 @@ ACCIDENTS_BUTTON = "🚨 Аварии"
 LOGS_BUTTON = "📊 Логи"
 BACK_BUTTON = "◀️ Назад"
 HOME_BUTTON = "🏠 Главное меню"
+
+APP_TIMEZONE = timezone(timedelta(hours=3))
 
 
 @dataclass(frozen=True, slots=True)

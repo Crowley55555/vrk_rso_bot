@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -106,7 +105,7 @@ class UserTaskHandler(BaseHandler):
         who_text = context.user_data.get("accident_who", "")
         urgency_text = "" if raw_urgency == "-" else raw_urgency
         context.user_data["accident_urgency"] = urgency_text
-        event_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+        event_time = self.now_datetime_minutes()
 
         row_data = [
             event_time,

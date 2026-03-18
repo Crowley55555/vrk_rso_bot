@@ -376,15 +376,20 @@ class AdminTaskHandler(BaseHandler):
         """Сохраняет аварию, добавленную администратором, в лист 'Аварии'."""
 
         flow_data = context.user_data.setdefault("flow_data", {})
-        flow_data["accident_who"] = update.message.text.strip()
+        accident_short = str(flow_data.get("accident_short", "")).strip()
+        accident_detail = str(flow_data.get("accident_detail", "")).strip()
+        accident_responsible = str(flow_data.get("accident_responsible", "")).strip()
+        accident_urgency = str(flow_data.get("accident_urgency", "")).strip()
+        accident_who = update.message.text.strip()
+        flow_data["accident_who"] = accident_who
 
         row_data = [
-            self._now_datetime_minutes(),
-            flow_data["accident_short"],
-            flow_data.get("accident_detail", ""),
-            flow_data.get("accident_responsible", ""),
-            flow_data.get("accident_urgency", ""),
-            flow_data["accident_who"],
+            self.now_datetime_minutes(),
+            accident_short,
+            accident_detail,
+            accident_responsible,
+            accident_urgency,
+            accident_who,
         ]
 
         try:
@@ -396,14 +401,14 @@ class AdminTaskHandler(BaseHandler):
 
         who = get_user_display_name(update.effective_user)
         details = (
-            f"Срочность: {flow_data.get('accident_urgency') or ''}. "
-            f"Ответственные: {flow_data.get('accident_responsible') or ''}. "
-            f"Кто добавил: {flow_data['accident_who']}"
+            f"Срочность: {accident_urgency}. "
+            f"Ответственные: {accident_responsible}. "
+            f"Кто добавил: {accident_who}"
         )
         await write_log(
             who,
             "Добавлена авария администратором",
-            flow_data["accident_short"],
+            accident_short,
             ACCIDENTS_SHEET,
             details,
         )
@@ -1575,10 +1580,3 @@ class AdminTaskHandler(BaseHandler):
                 return row
         return None
 
-    @staticmethod
-    def _now_datetime_minutes() -> str:
-        """Возвращает текущие дату и время с точностью до минут."""
-
-        from datetime import datetime
-
-        return datetime.now().strftime("%d.%m.%Y %H:%M")

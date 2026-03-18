@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes
 from bot.config import (
     ACCIDENTS_BUTTON,
     ADD_TASK_BUTTON,
+    APP_TIMEZONE,
     BACK_BUTTON,
     ACCIDENTS_SHEET,
     COMPLETED_SHEET,
@@ -218,7 +219,13 @@ class BaseHandler:
     def now_date() -> str:
         """Возвращает текущую дату в формате таблицы."""
 
-        return datetime.now().strftime("%d.%m.%Y")
+        return datetime.now(APP_TIMEZONE).strftime("%d.%m.%Y")
+
+    @staticmethod
+    def now_datetime_minutes() -> str:
+        """Возвращает текущие дату и время с точностью до минут в GMT+3."""
+
+        return datetime.now(APP_TIMEZONE).strftime("%d.%m.%Y %H:%M")
 
     def is_admin(self, update: Update) -> bool:
         """Проверяет права администратора по Telegram ID."""
