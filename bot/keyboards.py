@@ -42,6 +42,19 @@ class KeyboardFactory:
         )
 
     @staticmethod
+    def get_accidents_submenu_keyboard() -> ReplyKeyboardMarkup:
+        """Возвращает reply-клавиатуру подменю раздела аварий."""
+
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton("📋 Список аварий")],
+                [KeyboardButton("➕ Добавить аварию")],
+                [KeyboardButton(BACK_BUTTON), KeyboardButton(HOME_BUTTON)],
+            ],
+            resize_keyboard=True,
+        )
+
+    @staticmethod
     def navigation_menu(include_back: bool = True) -> ReplyKeyboardMarkup:
         """Возвращает клавиатуру навигации для диалогов."""
 
@@ -107,7 +120,7 @@ class KeyboardFactory:
             )
         if sheet_key == "accidents":
             keyboard.append(
-                [InlineKeyboardButton("▶️ Взять в работу", callback_data=f"take_accident_{row_index}")]
+                [InlineKeyboardButton("▶️ Взять в работу", callback_data=f"take_accidents_{row_index}")]
             )
             keyboard.append(
                 [

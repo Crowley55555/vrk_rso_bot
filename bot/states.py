@@ -13,11 +13,19 @@ class UserStates(IntEnum):
 class AdminStates(IntEnum):
     """Состояния административных сценариев."""
 
+    ACCIDENTS_MENU = 5
+
     ADD_TASK_NAME = 10
     ADD_COMMENTS = 11
     ADD_RESPONSIBLE = 12
     ADD_FULL_NAME = 13
     ADD_DEADLINE = 14
+
+    ADMIN_ACCIDENT_SHORT = 15
+    ADMIN_ACCIDENT_DETAIL = 16
+    ADMIN_ACCIDENT_RESPONSIBLE = 17
+    ADMIN_ACCIDENT_URGENCY = 18
+    ADMIN_ACCIDENT_WHO = 19
 
     EDIT_TASK_NAME = 20
     EDIT_COMMENTS = 21

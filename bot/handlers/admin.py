@@ -21,6 +21,7 @@ from bot.sheets import (
 from bot.states import AdminStates
 
 from .common import (
+    ACCIDENTS_PATTERN,
     ADD_TASK_PATTERN,
     BACK_PATTERN,
     HOME_PATTERN,
@@ -32,6 +33,9 @@ from .common import (
 
 
 logger = logging.getLogger(__name__)
+
+ACCIDENTS_LIST_BUTTON = "📋 Список аварий"
+ADD_ACCIDENT_BUTTON = "➕ Добавить аварию"
 
 
 class AdminTaskHandler(BaseHandler):
@@ -46,6 +50,7 @@ class AdminTaskHandler(BaseHandler):
         return ConversationHandler(
             entry_points=[
                 MessageHandler(filters.Regex(ADD_TASK_PATTERN) & admin_filter, self.start_add_task),
+                MessageHandler(filters.Regex(ACCIDENTS_PATTERN) & admin_filter, self.show_accidents_menu),
                 CallbackQueryHandler(self.start_edit_task, pattern=r"^edit_(todo|progress|done|accidents)_\d+$"),
                 CallbackQueryHandler(self.start_take_in_work, pattern=r"^take_(todo|accidents)_\d+$"),
                 CallbackQueryHandler(self.complete_task, pattern=r"^complete_(progress)_\d+$"),
@@ -53,11 +58,20 @@ class AdminTaskHandler(BaseHandler):
                 CallbackQueryHandler(self.mark_done_from_todo, pattern=r"^mark_done_\d+$"),
             ],
             states={
+                AdminStates.ACCIDENTS_MENU: [
+                    MessageHandler(filters.Regex(rf"^{ACCIDENTS_LIST_BUTTON}$"), self.show_accident_tasks_from_menu),
+                    MessageHandler(filters.Regex(rf"^{ADD_ACCIDENT_BUTTON}$"), self.start_add_accident),
+                ],
                 AdminStates.ADD_TASK_NAME: [MessageHandler(user_text_filter, self.receive_task_name)],
                 AdminStates.ADD_COMMENTS: [MessageHandler(user_text_filter, self.receive_comments)],
                 AdminStates.ADD_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_responsible)],
                 AdminStates.ADD_FULL_NAME: [MessageHandler(user_text_filter, self.receive_full_name)],
                 AdminStates.ADD_DEADLINE: [MessageHandler(user_text_filter, self.finish_add_task)],
+                AdminStates.ADMIN_ACCIDENT_SHORT: [MessageHandler(user_text_filter, self.receive_admin_accident_short)],
+                AdminStates.ADMIN_ACCIDENT_DETAIL: [MessageHandler(user_text_filter, self.receive_admin_accident_detail)],
+                AdminStates.ADMIN_ACCIDENT_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_admin_accident_responsible)],
+                AdminStates.ADMIN_ACCIDENT_URGENCY: [MessageHandler(user_text_filter, self.receive_admin_accident_urgency)],
+                AdminStates.ADMIN_ACCIDENT_WHO: [MessageHandler(user_text_filter, self.finish_add_accident)],
                 AdminStates.EDIT_TASK_NAME: [MessageHandler(user_text_filter, self.receive_edit_task_name)],
                 AdminStates.EDIT_COMMENTS: [MessageHandler(user_text_filter, self.receive_edit_comment)],
                 AdminStates.EDIT_DEADLINE: [MessageHandler(user_text_filter, self.receive_edit_deadline)],
@@ -77,6 +91,54 @@ class AdminTaskHandler(BaseHandler):
             name="admin_task_conversation",
             persistent=False,
         )
+
+    async def safe_delete_message(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        message_id: int | None,
+    ) -> None:
+        """Безопасно удаляет сообщение через общий менеджер сообщений."""
+
+        if update.effective_chat is None:
+            return
+        await self.message_manager.delete_message(update.effective_chat.id, context, message_id)
+
+    async def show_accidents_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Показывает администратору reply-подменю раздела аварий."""
+
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        context.user_data["flow_mode"] = "accidents_menu"
+        context.user_data.pop("flow_data", None)
+        context.user_data.pop("current_task", None)
+
+        if update.message:
+            self.message_manager.remember_user_message(update, context)
+            await self.safe_delete_message(update, context, update.message.message_id)
+
+        return await self._send_accidents_menu(update, context)
+
+    async def _send_accidents_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Отправляет сообщение подменю раздела аварий."""
+
+        context.user_data["current_state"] = AdminStates.ACCIDENTS_MENU
+        await self.send_text(
+            update,
+            context,
+            "🚨 Раздел Аварии. Выберите действие:",
+            reply_markup=KeyboardFactory.get_accidents_submenu_keyboard(),
+            remember_as_last=True,
+        )
+        return AdminStates.ACCIDENTS_MENU
+
+    async def show_accident_tasks_from_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Открывает список аварий из подменю раздела аварий."""
+
+        await self.message_manager.delete_step_messages(update, context)
+        context.user_data["flow_mode"] = "accidents_list"
+        await self._show_task_list_for_sheet(update, context, "accidents")
+        context.user_data["current_state"] = AdminStates.ACCIDENTS_MENU
+        return AdminStates.ACCIDENTS_MENU
 
     async def show_accident_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показывает список аварий."""
@@ -265,6 +327,92 @@ class AdminTaskHandler(BaseHandler):
         await self.send_text(update, context, "Задача успешно добавлена")
         await self.show_main_menu(update, context)
         return ConversationHandler.END
+
+    async def start_add_accident(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Запускает административный сценарий добавления аварии."""
+
+        await self.message_manager.delete_step_messages(update, context)
+        context.user_data["flow_mode"] = "admin_add_accident"
+        context.user_data["flow_data"] = {}
+        await self._ask_admin_accident_short(update, context)
+        return AdminStates.ADMIN_ACCIDENT_SHORT
+
+    async def receive_admin_accident_short(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Сохраняет краткое описание аварии и участок."""
+
+        context.user_data.setdefault("flow_data", {})["accident_short"] = update.message.text.strip()
+        await self.message_manager.delete_step_messages(update, context)
+        await self._ask_admin_accident_detail(update, context)
+        return AdminStates.ADMIN_ACCIDENT_DETAIL
+
+    async def receive_admin_accident_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Сохраняет подробное описание аварии."""
+
+        raw_value = update.message.text.strip()
+        context.user_data.setdefault("flow_data", {})["accident_detail"] = "" if raw_value == "-" else raw_value
+        await self.message_manager.delete_step_messages(update, context)
+        await self._ask_admin_accident_responsible(update, context)
+        return AdminStates.ADMIN_ACCIDENT_RESPONSIBLE
+
+    async def receive_admin_accident_responsible(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Сохраняет ответственных по аварии."""
+
+        raw_value = update.message.text.strip()
+        context.user_data.setdefault("flow_data", {})["accident_responsible"] = "" if raw_value == "-" else raw_value
+        await self.message_manager.delete_step_messages(update, context)
+        await self._ask_admin_accident_urgency(update, context)
+        return AdminStates.ADMIN_ACCIDENT_URGENCY
+
+    async def receive_admin_accident_urgency(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Сохраняет срочность ремонта и спрашивает ФИО."""
+
+        raw_value = update.message.text.strip()
+        context.user_data.setdefault("flow_data", {})["accident_urgency"] = "" if raw_value == "-" else raw_value
+        await self.message_manager.delete_step_messages(update, context)
+        await self._ask_admin_accident_who(update, context)
+        return AdminStates.ADMIN_ACCIDENT_WHO
+
+    async def finish_add_accident(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Сохраняет аварию, добавленную администратором, в лист 'Аварии'."""
+
+        flow_data = context.user_data.setdefault("flow_data", {})
+        flow_data["accident_who"] = update.message.text.strip()
+
+        row_data = [
+            self._now_datetime_minutes(),
+            flow_data["accident_short"],
+            flow_data.get("accident_detail", ""),
+            flow_data.get("accident_responsible", ""),
+            flow_data.get("accident_urgency", ""),
+            flow_data["accident_who"],
+        ]
+
+        try:
+            await append_task(ACCIDENTS_SHEET, row_data)
+        except SheetsServiceError:
+            await self.message_manager.delete_step_messages(update, context)
+            await self.show_error(update, context, "Не удалось сохранить аварию. Попробуйте позже.")
+            return ConversationHandler.END
+
+        who = get_user_display_name(update.effective_user)
+        details = (
+            f"Срочность: {flow_data.get('accident_urgency') or ''}. "
+            f"Ответственные: {flow_data.get('accident_responsible') or ''}. "
+            f"Кто добавил: {flow_data['accident_who']}"
+        )
+        await write_log(
+            who,
+            "Добавлена авария администратором",
+            flow_data["accident_short"],
+            ACCIDENTS_SHEET,
+            details,
+        )
+
+        await self.message_manager.delete_step_messages(update, context)
+        context.user_data.pop("flow_data", None)
+        context.user_data["flow_mode"] = "accidents_menu"
+        await self.send_text(update, context, "✅ Авария добавлена в таблицу.")
+        return await self._send_accidents_menu(update, context)
 
     async def start_edit_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Запускает редактирование названия, комментария, срока и ответственных."""
@@ -577,10 +725,7 @@ class AdminTaskHandler(BaseHandler):
             return
 
         try:
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=query.message.message_id,
-            )
+            await self.safe_delete_message(update, context, query.message.message_id)
         except Exception:
             pass
 
@@ -638,10 +783,7 @@ class AdminTaskHandler(BaseHandler):
             await delete_row(sheet_name, row_index)
         except SheetsServiceError:
             try:
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id,
-                    message_id=query.message.message_id,
-                )
+                await self.safe_delete_message(update, context, query.message.message_id)
             except Exception:
                 pass
             await self.send_text(
@@ -659,10 +801,7 @@ class AdminTaskHandler(BaseHandler):
             await write_log(who, "Задача удалена", task_name, sheet_name, "Удалено администратором")
 
         try:
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=query.message.message_id,
-            )
+            await self.safe_delete_message(update, context, query.message.message_id)
         except Exception:
             pass
 
@@ -694,10 +833,7 @@ class AdminTaskHandler(BaseHandler):
             return
 
         try:
-            await context.bot.delete_message(
-                chat_id=update.effective_chat.id,
-                message_id=query.message.message_id,
-            )
+            await self.safe_delete_message(update, context, query.message.message_id)
         except Exception:
             pass
 
@@ -1073,6 +1209,38 @@ class AdminTaskHandler(BaseHandler):
             await self._ask_add_full_name(update, context)
             return AdminStates.ADD_FULL_NAME
 
+        if mode == "accidents_menu":
+            context.user_data.pop("flow_data", None)
+            context.user_data.pop("flow_mode", None)
+            await self.show_main_menu(update, context)
+            return ConversationHandler.END
+
+        if mode == "accidents_list":
+            context.user_data["flow_mode"] = "accidents_menu"
+            return await self.show_accidents_menu(update, context)
+
+        if mode == "admin_add_accident":
+            if current_state == AdminStates.ADMIN_ACCIDENT_SHORT:
+                context.user_data.pop("flow_data", None)
+                context.user_data["flow_mode"] = "accidents_menu"
+                return await self.show_accidents_menu(update, context)
+            if current_state == AdminStates.ADMIN_ACCIDENT_DETAIL:
+                flow_data.pop("accident_short", None)
+                await self._ask_admin_accident_short(update, context)
+                return AdminStates.ADMIN_ACCIDENT_SHORT
+            if current_state == AdminStates.ADMIN_ACCIDENT_RESPONSIBLE:
+                flow_data.pop("accident_detail", None)
+                await self._ask_admin_accident_detail(update, context)
+                return AdminStates.ADMIN_ACCIDENT_DETAIL
+            if current_state == AdminStates.ADMIN_ACCIDENT_URGENCY:
+                flow_data.pop("accident_responsible", None)
+                await self._ask_admin_accident_responsible(update, context)
+                return AdminStates.ADMIN_ACCIDENT_RESPONSIBLE
+
+            flow_data.pop("accident_urgency", None)
+            await self._ask_admin_accident_urgency(update, context)
+            return AdminStates.ADMIN_ACCIDENT_URGENCY
+
         if mode == "edit":
             if current_state == AdminStates.EDIT_TASK_NAME:
                 context.user_data.pop("flow_data", None)
@@ -1192,6 +1360,56 @@ class AdminTaskHandler(BaseHandler):
             update,
             context,
             "Введите срок выполнения (или «-» чтобы пропустить)",
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_admin_accident_short(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.ADMIN_ACCIDENT_SHORT
+        await self.send_text(
+            update,
+            context,
+            "Введите краткое описание аварии и укажите на каком участке она произошла:",
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_admin_accident_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.ADMIN_ACCIDENT_DETAIL
+        await self.send_text(
+            update,
+            context,
+            "Введите подробное описание произошедшего (или «-» чтобы пропустить):",
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_admin_accident_responsible(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.ADMIN_ACCIDENT_RESPONSIBLE
+        await self.send_text(
+            update,
+            context,
+            "Введите ответственных (или «-» чтобы пропустить):",
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_admin_accident_urgency(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.ADMIN_ACCIDENT_URGENCY
+        await self.send_text(
+            update,
+            context,
+            "Как срочно требуется ремонт? (или «-» чтобы пропустить):",
+            reply_markup=KeyboardFactory.navigation_menu(),
+            remember_as_last=True,
+        )
+
+    async def _ask_admin_accident_who(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data["current_state"] = AdminStates.ADMIN_ACCIDENT_WHO
+        await self.send_text(
+            update,
+            context,
+            "Введите ваши ФИО:",
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
         )
@@ -1356,3 +1574,11 @@ class AdminTaskHandler(BaseHandler):
             if int(row["row_index"]) == row_index:
                 return row
         return None
+
+    @staticmethod
+    def _now_datetime_minutes() -> str:
+        """Возвращает текущие дату и время с точностью до минут."""
+
+        from datetime import datetime
+
+        return datetime.now().strftime("%d.%m.%Y %H:%M")

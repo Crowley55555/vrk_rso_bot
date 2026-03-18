@@ -12,7 +12,6 @@ from telegram.error import Conflict
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.config import (
-    ACCIDENTS_BUTTON,
     BACK_BUTTON,
     HOME_BUTTON,
     LOGS_BUTTON,
@@ -101,9 +100,6 @@ def build_application() -> Application:
     )
     application.add_handler(
         MessageHandler(filters.Regex(rf"^{TASKS_DONE_BUTTON}$") & admin_filter, common_handlers.show_done_tasks)
-    )
-    application.add_handler(
-        MessageHandler(filters.Regex(rf"^{ACCIDENTS_BUTTON}$") & admin_filter, admin_handlers.show_accident_tasks)
     )
     application.add_handler(
         MessageHandler(filters.Regex(rf"^{LOGS_BUTTON}$") & admin_filter, admin_handlers.show_logs)
