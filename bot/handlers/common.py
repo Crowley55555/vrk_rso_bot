@@ -324,6 +324,7 @@ class CommonHandlers(BaseHandler):
     async def start_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показывает главное меню администратора."""
 
+        context.user_data.clear()
         await self.message_manager.cleanup_session(update.effective_chat.id, context)
         await self.show_main_menu(update, context)
 
