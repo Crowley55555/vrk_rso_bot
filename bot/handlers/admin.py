@@ -83,7 +83,6 @@ class AdminTaskHandler(BaseHandler):
                 AdminStates.EDIT_COMMENTS: [MessageHandler(user_text_filter, self.receive_edit_comment)],
                 AdminStates.EDIT_DEADLINE: [MessageHandler(user_text_filter, self.receive_edit_deadline)],
                 AdminStates.EDIT_RESPONSIBLE: [MessageHandler(user_text_filter, self.receive_edit_responsible)],
-                AdminStates.EDIT_ACCIDENT_A: [MessageHandler(user_text_filter, self.receive_edit_accident_date)],
                 AdminStates.EDIT_ACCIDENT_B: [MessageHandler(user_text_filter, self.receive_edit_accident_title)],
                 AdminStates.EDIT_ACCIDENT_C: [MessageHandler(user_text_filter, self.receive_edit_accident_description)],
                 AdminStates.EDIT_ACCIDENT_D: [MessageHandler(user_text_filter, self.receive_edit_accident_responsible)],
@@ -490,9 +489,11 @@ class AdminTaskHandler(BaseHandler):
 
         await self.message_manager.delete_step_messages(update, context)
         context.user_data.pop("flow_data", None)
-        context.user_data["flow_mode"] = "accidents_menu"
+        context.user_data["flow_mode"] = "accidents_list"
         await self.send_text(update, context, "✅ Авария добавлена в таблицу.")
-        return await self._send_accidents_menu(update, context)
+        await self._show_task_list_for_sheet(update, context, "accidents")
+        context.user_data["current_state"] = AdminStates.ACCIDENTS_MENU
+        return AdminStates.ACCIDENTS_MENU
 
     async def start_edit_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Запускает редактирование названия, комментария, срока и ответственных."""
@@ -534,7 +535,6 @@ class AdminTaskHandler(BaseHandler):
             context.user_data["flow_data"] = {
                 "sheet_key": sheet_key,
                 "row_index": row_index,
-                "current_date": task.date,
                 "current_title": task.task_name,
                 "current_description": task.comments,
                 "current_responsible": task.responsible,
@@ -542,8 +542,8 @@ class AdminTaskHandler(BaseHandler):
                 "current_who": task.added_by,
             }
             await self.message_manager.cleanup_session(update.effective_chat.id, context)
-            await self._ask_edit_accident_date(update, context)
-            return AdminStates.EDIT_ACCIDENT_A
+            await self._ask_edit_accident_title(update, context)
+            return AdminStates.EDIT_ACCIDENT_B
 
         flow_data = {
             "sheet_key": sheet_key,
@@ -599,14 +599,6 @@ class AdminTaskHandler(BaseHandler):
         await self.message_manager.delete_step_messages(update, context)
         return await self._apply_edit_and_finish(update, context)
 
-    async def receive_edit_accident_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Принимает новую дату аварии и спрашивает краткое описание."""
-
-        context.user_data.setdefault("flow_data", {})["new_date"] = update.message.text.strip()
-        await self.message_manager.delete_step_messages(update, context)
-        await self._ask_edit_accident_title(update, context)
-        return AdminStates.EDIT_ACCIDENT_B
-
     async def receive_edit_accident_title(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Принимает новое краткое описание аварии и спрашивает подробности."""
 
@@ -650,11 +642,6 @@ class AdminTaskHandler(BaseHandler):
         """Применяет изменения всех полей аварии."""
 
         flow_data = context.user_data.setdefault("flow_data", {})
-        new_date = (
-            flow_data["current_date"]
-            if flow_data.get("new_date") == "-"
-            else flow_data.get("new_date", flow_data["current_date"])
-        )
         new_title = (
             flow_data["current_title"]
             if flow_data.get("new_title") == "-"
@@ -685,10 +672,6 @@ class AdminTaskHandler(BaseHandler):
 
         changes: list[str] = []
         try:
-            if new_date != flow_data["current_date"]:
-                await update_cell(ACCIDENTS_SHEET, row_index, 1, new_date)
-                current_task["A"] = new_date
-                changes.append(f'Дата добавления: "{flow_data["current_date"]}" → "{new_date}"')
             if new_title != flow_data["current_title"]:
                 await update_cell(ACCIDENTS_SHEET, row_index, 2, new_title)
                 current_task["B"] = new_title
@@ -1412,29 +1395,24 @@ class AdminTaskHandler(BaseHandler):
                 return AdminStates.EDIT_DEADLINE
 
         if mode == "edit_accident":
-            if current_state == AdminStates.EDIT_ACCIDENT_A:
-                context.user_data.pop("flow_data", None)
-                context.user_data.pop("flow_mode", None)
-                return await self._return_to_current_task_card(update, context)
             if current_state == AdminStates.EDIT_ACCIDENT_B:
-                flow_data.pop("new_date", None)
-                await self._ask_edit_accident_date(update, context)
-                return AdminStates.EDIT_ACCIDENT_A
-            if current_state == AdminStates.EDIT_ACCIDENT_C:
                 flow_data.pop("new_title", None)
-                await self._ask_edit_accident_title(update, context)
-                return AdminStates.EDIT_ACCIDENT_B
-            if current_state == AdminStates.EDIT_ACCIDENT_D:
+                return await self._return_to_current_task_card(update, context)
+            if current_state == AdminStates.EDIT_ACCIDENT_C:
                 flow_data.pop("new_description", None)
                 await self._ask_edit_accident_description(update, context)
-                return AdminStates.EDIT_ACCIDENT_C
-            if current_state == AdminStates.EDIT_ACCIDENT_E:
+                return AdminStates.EDIT_ACCIDENT_B
+            if current_state == AdminStates.EDIT_ACCIDENT_D:
                 flow_data.pop("new_responsible", None)
                 await self._ask_edit_accident_responsible(update, context)
-                return AdminStates.EDIT_ACCIDENT_D
-            if current_state == AdminStates.EDIT_ACCIDENT_F:
+                return AdminStates.EDIT_ACCIDENT_C
+            if current_state == AdminStates.EDIT_ACCIDENT_E:
                 flow_data.pop("new_urgency", None)
                 await self._ask_edit_accident_urgency(update, context)
+                return AdminStates.EDIT_ACCIDENT_D
+            if current_state == AdminStates.EDIT_ACCIDENT_F:
+                flow_data.pop("new_who", None)
+                await self._ask_edit_accident_who(update, context)
                 return AdminStates.EDIT_ACCIDENT_E
 
         if mode == "take_in_work":
@@ -1653,24 +1631,6 @@ class AdminTaskHandler(BaseHandler):
             "Текущее значение:\n"
             f"{display}\n\n"
             "Введите новых ответственных или «\\-» чтобы оставить без изменений\\."
-        )
-        await self.send_preformatted_text(
-            update,
-            context,
-            text,
-            reply_markup=KeyboardFactory.navigation_menu(),
-            remember_as_last=True,
-        )
-
-    async def _ask_edit_accident_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        context.user_data["current_state"] = AdminStates.EDIT_ACCIDENT_A
-        current_task = context.user_data.get("current_task") or {}
-        display = self._format_edit_current_value(current_task.get("A") or "")
-        text = (
-            "✏️ *Редактирование даты добавления*\n\n"
-            "Текущее значение:\n"
-            f"{display}\n\n"
-            "Введите новое значение или «\\-» чтобы оставить без изменений\\."
         )
         await self.send_preformatted_text(
             update,
