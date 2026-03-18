@@ -61,6 +61,13 @@ class AdminTaskHandler(BaseHandler):
                 AdminStates.ACCIDENTS_MENU: [
                     MessageHandler(filters.Regex(rf"^{ACCIDENTS_LIST_BUTTON}$"), self.show_accident_tasks_from_menu),
                     MessageHandler(filters.Regex(rf"^{ADD_ACCIDENT_BUTTON}$"), self.start_add_accident),
+                    CallbackQueryHandler(self.show_task_card, pattern=r"^task_accidents_\d+$"),
+                    CallbackQueryHandler(self.start_edit_task, pattern=r"^edit_accidents_\d+$"),
+                    CallbackQueryHandler(self.start_take_in_work, pattern=r"^take_accidents_\d+$"),
+                    CallbackQueryHandler(self.complete_accident, pattern=r"^complete_accident_\d+$"),
+                    CallbackQueryHandler(self.show_delete_confirmation, pattern=r"^delete_task_accidents_\d+$"),
+                    CallbackQueryHandler(self.confirm_delete_task, pattern=r"^confirm_delete_accidents_\d+$"),
+                    CallbackQueryHandler(self.cancel_delete_task, pattern=r"^cancel_delete_accidents_\d+$"),
                 ],
                 AdminStates.ADD_TASK_NAME: [MessageHandler(user_text_filter, self.receive_task_name)],
                 AdminStates.ADD_COMMENTS: [MessageHandler(user_text_filter, self.receive_comments)],
