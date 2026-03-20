@@ -8,7 +8,7 @@ if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from telegram import Update
-from telegram.error import Conflict
+from telegram.error import Conflict, TimedOut
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.config import (
@@ -39,15 +39,20 @@ def configure_logging() -> None:
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Логирует необработанные ошибки и сообщает пользователю о сбое."""
 
+    log = logging.getLogger(__name__)
+
     if isinstance(context.error, Conflict):
-        log = logging.getLogger(__name__)
         log.warning(
             "Conflict: к боту одновременно подключается больше одного экземпляра (getUpdates). "
             "Запускайте бота только в одном месте: либо на сервере, либо локально."
         )
         return
 
-    logging.getLogger(__name__).exception("Необработанная ошибка бота", exc_info=context.error)
+    if isinstance(context.error, TimedOut):
+        log.warning("TimedOut: запрос к Telegram API не успел выполниться. Проверьте сеть/доступность Telegram.")
+        return
+
+    log.exception("Необработанная ошибка бота", exc_info=context.error)
 
     if isinstance(update, Update) and update.effective_chat:
         try:
@@ -55,8 +60,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 chat_id=update.effective_chat.id,
                 text="Произошла внутренняя ошибка. Попробуйте повторить действие позже.",
             )
+        except TimedOut:
+            log.warning("Не удалось отправить сообщение об ошибке пользователю: Telegram API timed out.")
         except Exception:
-            logging.getLogger(__name__).exception("Не удалось отправить сообщение об ошибке пользователю")
+            log.exception("Не удалось отправить сообщение об ошибке пользователю")
 
 
 def build_application() -> Application:
