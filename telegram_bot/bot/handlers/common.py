@@ -29,7 +29,7 @@ from bot.config import (
     TASKS_TODO_BUTTON,
 )
 from bot.keyboards import KeyboardFactory
-from bot.sheets import SheetsServiceError, get_all_tasks
+from shared.api_client import SheetsServiceError, get_all_tasks
 
 
 logger = logging.getLogger(__name__)

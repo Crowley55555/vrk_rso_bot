@@ -9,7 +9,7 @@ from telegram.helpers import escape_markdown
 
 from bot.config import ACCIDENTS_SHEET, Settings
 from bot.keyboards import KeyboardFactory
-from bot.sheets import SheetsServiceError, append_task, write_log
+from shared.api_client import SheetsServiceError, append_task, write_log
 from bot.states import UserStates
 
 from .common import (

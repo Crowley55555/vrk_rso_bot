@@ -1,0 +1,383 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import sys
+from max_bot.config import BACK_BUTTON, HOME_BUTTON, load_settings
+from max_bot.handlers.admin import AdminTaskHandler
+from max_bot.handlers.common_max import CommonHandlersMax, MaxCtx, MaxMessageManager
+from max_bot.handlers.user import UserTaskHandlerMax
+from max_bot.max_api import MaxApi, _extract_mid, message_body_text, sender_user_id
+from max_bot.states import CONV_END, AdminStates, UserStates
+from shared.api_client import configure_api_client
+
+
+logger = logging.getLogger(__name__)
+
+user_states: dict[int, int] = {}
+user_data: dict[int, dict] = {}
+
+
+def _ud(uid: int) -> dict:
+    return user_data.setdefault(uid, {})
+
+
+def _set_state_after_admin_int(uid: int, result: int) -> None:
+    if result == CONV_END:
+        user_states.pop(uid, None)
+    else:
+        user_states[uid] = result
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        stream=sys.stdout,
+    )
+
+
+def _parse_callback_update(raw: dict) -> tuple[str, str, int | None, str | None, dict | None]:
+    """callback_id, payload, user_id, message_mid, user dict"""
+    cb = raw.get("callback") or raw.get("message_callback") or raw
+    callback_id = str(cb.get("callback_id") or cb.get("id") or "")
+    payload = cb.get("payload", "")
+    if not isinstance(payload, str):
+        payload = str(payload)
+    user = cb.get("user")
+    if not isinstance(user, dict):
+        user = {}
+    uid = user.get("user_id")
+    if uid is None:
+        msg = cb.get("message") if isinstance(cb.get("message"), dict) else {}
+        uid = sender_user_id(msg)
+    if uid is not None:
+        uid = int(uid)
+    msg = cb.get("message") if isinstance(cb.get("message"), dict) else {}
+    mid = _extract_mid(msg)
+    return callback_id, payload, uid, mid, user if user else None
+
+
+def _parse_message_created(raw: dict) -> tuple[int | None, str, str | None, dict | None]:
+    msg = raw.get("message") or {}
+    uid = sender_user_id(msg)
+    if uid is not None:
+        uid = int(uid)
+    text = message_body_text(msg)
+    mid = _extract_mid(msg)
+    sender = msg.get("sender") if isinstance(msg.get("sender"), dict) else None
+    return uid, text, mid, sender
+
+
+async def main_async() -> None:
+    settings = load_settings()
+    configure_api_client(settings.api_base_url, settings.api_key)
+
+    max_api = MaxApi(settings.max_bot_token, settings.max_api_base)
+    mm = MaxMessageManager(max_api)
+    common = CommonHandlersMax(settings, mm, max_api)
+    user_h = UserTaskHandlerMax(settings, mm, max_api)
+    admin_h = AdminTaskHandler(settings, mm, max_api)
+
+    marker: int | None = None
+    logger.info("Max-бот запущен, long polling /updates")
+
+    try:
+        while True:
+            try:
+                updates, marker = await max_api.get_updates(marker=marker)
+            except Exception:
+                logger.exception("Ошибка long polling, повтор через 5 с")
+                await asyncio.sleep(5)
+                continue
+
+            for upd in updates:
+                ut = upd.get("update_type")
+                if ut == "message_created":
+                    uid, text, mid, sender = _parse_message_created(upd)
+                    if uid is None:
+                        continue
+                    ud = _ud(uid)
+                    ctx = MaxCtx(
+                        user_id=uid,
+                        user_data=ud,
+                        max_api=max_api,
+                        message_manager=mm,
+                        text=text,
+                        incoming_message_mid=mid,
+                        sender=sender,
+                    )
+                    await handle_message(ctx, settings, common, user_h, admin_h)
+                elif ut == "message_callback":
+                    cb_id, payload, uid, cb_mid, user_d = _parse_callback_update(upd)
+                    if uid is None:
+                        continue
+                    ud = _ud(uid)
+                    ctx = MaxCtx(
+                        user_id=uid,
+                        user_data=ud,
+                        max_api=max_api,
+                        message_manager=mm,
+                        callback_payload=payload,
+                        callback_id=cb_id or None,
+                        callback_message_mid=cb_mid,
+                        sender=user_d,
+                    )
+                    await handle_callback(ctx, settings, common, user_h, admin_h)
+    finally:
+        await max_api.aclose()
+
+
+async def handle_message(
+    ctx: MaxCtx,
+    settings,
+    common: CommonHandlersMax,
+    user_h: UserTaskHandlerMax,
+    admin_h: AdminTaskHandler,
+) -> None:
+    uid = ctx.user_id
+    ud = ctx.user_data
+    text = (ctx.text or "").strip()
+
+    if text.startswith("/start"):
+        ud.clear()
+        user_states.pop(uid, None)
+        await ctx.message_manager.cleanup_session(uid, ud)
+        await common.start_clear(uid, ud)
+        return
+
+    if text.startswith("/cancel"):
+        ud.clear()
+        user_states.pop(uid, None)
+        await ctx.message_manager.cleanup_session(uid, ud)
+        await common.send_text(ctx, "Действие отменено")
+        await common.show_main_menu(uid, ud)
+        return
+
+    is_adm = settings.is_admin(uid)
+    st = user_states.get(uid)
+
+    if text in (BACK_BUTTON, HOME_BUTTON):
+        if is_adm:
+            res = await admin_h.go_back(ctx) if st else await admin_h.go_home(ctx)
+            _set_state_after_admin_int(uid, res)
+        else:
+            if st:
+                if text == HOME_BUTTON:
+                    r = await user_h.go_home(ctx)
+                else:
+                    r = await user_h.go_back(ctx)
+                if r == CONV_END:
+                    user_states.pop(uid, None)
+                else:
+                    user_states[uid] = r
+            else:
+                await common.go_home(ctx)
+                user_states.pop(uid, None)
+        return
+
+    if is_adm:
+        if st is not None:
+            nxt = await dispatch_admin_text(st, ctx, admin_h)
+            if nxt == CONV_END:
+                user_states.pop(uid, None)
+            else:
+                user_states[uid] = nxt
+            return
+        await common.send_text(ctx, "Используйте кнопки меню или команду /start")
+        return
+
+    if st is not None:
+        nxt = await dispatch_user_text(st, ctx, user_h)
+        if nxt == CONV_END:
+            user_states.pop(uid, None)
+        else:
+            user_states[uid] = nxt
+        return
+
+    await common.send_text(ctx, "Нажмите /start или выберите действие в меню.")
+
+
+async def dispatch_user_text(state: int, ctx: MaxCtx, user_h: UserTaskHandlerMax) -> int:
+    if state == int(UserStates.ACCIDENT_SHORT):
+        return await user_h.receive_accident_short(ctx)
+    if state == int(UserStates.ACCIDENT_DETAIL):
+        return await user_h.receive_accident_detail(ctx)
+    if state == int(UserStates.ACCIDENT_WHO):
+        return await user_h.receive_accident_who(ctx)
+    if state == int(UserStates.ACCIDENT_URGENCY):
+        return await user_h.finish_creation(ctx)
+    return CONV_END
+
+
+async def dispatch_admin_text(state: int, ctx: MaxCtx, admin_h: AdminTaskHandler) -> int:
+    s = AdminStates(state)
+    if s == AdminStates.ADD_TASK_NAME:
+        return await admin_h.receive_task_name(ctx)
+    if s == AdminStates.ADD_COMMENTS:
+        return await admin_h.receive_comments(ctx)
+    if s == AdminStates.ADD_RESPONSIBLE:
+        return await admin_h.receive_responsible(ctx)
+    if s == AdminStates.ADD_FULL_NAME:
+        return await admin_h.receive_full_name(ctx)
+    if s == AdminStates.ADD_DEADLINE:
+        return await admin_h.finish_add_task(ctx)
+    if s == AdminStates.ADMIN_ACCIDENT_SHORT:
+        return await admin_h.receive_admin_accident_short(ctx)
+    if s == AdminStates.ADMIN_ACCIDENT_DETAIL:
+        return await admin_h.receive_admin_accident_detail(ctx)
+    if s == AdminStates.ADMIN_ACCIDENT_RESPONSIBLE:
+        return await admin_h.receive_admin_accident_responsible(ctx)
+    if s == AdminStates.ADMIN_ACCIDENT_URGENCY:
+        return await admin_h.receive_admin_accident_urgency(ctx)
+    if s == AdminStates.ADMIN_ACCIDENT_WHO:
+        return await admin_h.finish_add_accident(ctx)
+    if s == AdminStates.EDIT_TASK_NAME:
+        return await admin_h.receive_edit_task_name(ctx)
+    if s == AdminStates.EDIT_COMMENTS:
+        return await admin_h.receive_edit_comment(ctx)
+    if s == AdminStates.EDIT_DEADLINE:
+        return await admin_h.receive_edit_deadline(ctx)
+    if s == AdminStates.EDIT_RESPONSIBLE:
+        return await admin_h.receive_edit_responsible(ctx)
+    if s == AdminStates.EDIT_ACCIDENT_B:
+        return await admin_h.receive_edit_accident_title(ctx)
+    if s == AdminStates.EDIT_ACCIDENT_C:
+        return await admin_h.receive_edit_accident_description(ctx)
+    if s == AdminStates.EDIT_ACCIDENT_D:
+        return await admin_h.receive_edit_accident_responsible(ctx)
+    if s == AdminStates.EDIT_ACCIDENT_E:
+        return await admin_h.receive_edit_accident_urgency(ctx)
+    if s == AdminStates.EDIT_ACCIDENT_F:
+        return await admin_h.receive_edit_accident_who(ctx)
+    if s == AdminStates.TAKE_IN_WORK_COMMENTS:
+        return await admin_h.receive_take_comment(ctx)
+    if s == AdminStates.TAKE_IN_WORK_RESPONSIBLE:
+        return await admin_h.finish_take_in_work(ctx)
+    return CONV_END
+
+
+async def handle_callback(
+    ctx: MaxCtx,
+    settings,
+    common: CommonHandlersMax,
+    user_h: UserTaskHandlerMax,
+    admin_h: AdminTaskHandler,
+) -> None:
+    uid = ctx.user_id
+    ud = ctx.user_data
+    p = ctx.callback_payload or ""
+    is_adm = settings.is_admin(uid)
+
+    if ctx.callback_id:
+        try:
+            await ctx.answer_callback()
+        except Exception:
+            logger.debug("answer_callback пропущен", exc_info=True)
+
+    if p == "nav_home" or p == "home_menu":
+        if is_adm:
+            _set_state_after_admin_int(uid, await admin_h.go_home(ctx))
+        else:
+            await common.go_home_from_callback(ctx)
+            user_states.pop(uid, None)
+        return
+
+    if p == "nav_back":
+        if is_adm:
+            _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
+        else:
+            r = await user_h.go_back(ctx)
+            if r == CONV_END:
+                user_states.pop(uid, None)
+            else:
+                user_states[uid] = r
+        return
+
+    if p == "nav_back_accidents_menu":
+        if is_adm:
+            _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
+        return
+
+    if not is_adm:
+        if p == "menu_report_accident":
+            user_states[uid] = await user_h.start(ctx)
+        elif re.match(r"^task_(todo|progress|done|accidents)_\d+$", p):
+            await common.show_task_card(ctx)
+        return
+
+    if p == "menu_add_task":
+        _set_state_after_admin_int(uid, await admin_h.start_add_task(ctx))
+        return
+    if p == "menu_accidents":
+        _set_state_after_admin_int(uid, await admin_h.show_accidents_menu(ctx))
+        return
+    if p == "menu_logs":
+        await admin_h.show_logs(ctx)
+        return
+    if p == "menu_todo":
+        await common.show_todo_tasks(ctx)
+        return
+    if p == "menu_progress":
+        await common.show_in_progress_tasks(ctx)
+        return
+    if p == "menu_done":
+        await common.show_done_tasks(ctx)
+        return
+
+    if p == "accidents_list":
+        _set_state_after_admin_int(uid, await admin_h.show_accident_tasks_from_menu(ctx))
+        return
+    if p == "accidents_add":
+        _set_state_after_admin_int(uid, await admin_h.start_add_accident(ctx))
+        return
+
+    if p.startswith("log_"):
+        await admin_h.show_log_detail(ctx)
+        return
+    if p == "back_to_logs":
+        await admin_h.back_to_logs(ctx)
+        return
+
+    if ud.get("current_state") == int(AdminStates.ACCIDENTS_MENU) and re.match(r"^task_accidents_\d+$", p):
+        await admin_h.show_task_card(ctx)
+        return
+
+    if re.match(r"^task_(todo|progress|done|accidents)_\d+$", p):
+        await common.show_task_card(ctx)
+        return
+
+    if re.match(r"^edit_(todo|progress|done|accidents)_\d+$", p):
+        _set_state_after_admin_int(uid, await admin_h.start_edit_task(ctx))
+        return
+    if re.match(r"^take_(todo|accidents)_\d+$", p):
+        _set_state_after_admin_int(uid, await admin_h.start_take_in_work(ctx))
+        return
+    if re.match(r"^complete_progress_\d+$", p):
+        _set_state_after_admin_int(uid, await admin_h.complete_task(ctx))
+        return
+    if re.match(r"^complete_accident_\d+$", p):
+        _set_state_after_admin_int(uid, await admin_h.complete_accident(ctx))
+        return
+    if re.match(r"^mark_done_\d+$", p):
+        _set_state_after_admin_int(uid, await admin_h.mark_done_from_todo(ctx))
+        return
+    if re.match(r"^delete_task_(todo|progress|done|accidents)_\d+$", p):
+        await admin_h.show_delete_confirmation(ctx)
+        return
+    if re.match(r"^confirm_delete_(todo|progress|done|accidents)_\d+$", p):
+        await admin_h.confirm_delete_task(ctx)
+        return
+    if re.match(r"^cancel_delete_(todo|progress|done|accidents)_\d+$", p):
+        await admin_h.cancel_delete_task(ctx)
+        return
+
+
+def main() -> None:
+    configure_logging()
+    asyncio.run(main_async())
+
+
+if __name__ == "__main__":
+    main()

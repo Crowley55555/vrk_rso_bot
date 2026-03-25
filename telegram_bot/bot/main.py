@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    _here = Path(__file__).resolve().parent
+    sys.path.append(str(_here.parent))
+    sys.path.append(str(_here.parent.parent))
 
 from telegram import Update
 from telegram.error import Conflict, TimedOut
@@ -23,7 +25,7 @@ from bot.config import (
 from bot.handlers.admin import AdminTaskHandler
 from bot.handlers.common import CommonHandlers, MessageManager
 from bot.handlers.user import UserTaskHandler
-from bot.sheets import setup_sheets
+from shared.api_client import configure_api_client
 
 
 def configure_logging() -> None:
@@ -70,7 +72,7 @@ def build_application() -> Application:
     """Создаёт и настраивает экземпляр Telegram-приложения."""
 
     settings = load_settings()
-    setup_sheets(settings)
+    configure_api_client(settings.api_base_url, settings.api_key)
 
     message_manager = MessageManager()
     common_handlers = CommonHandlers(settings, message_manager)

@@ -9,7 +9,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Con
 
 from bot.config import ACCIDENTS_SHEET, COMPLETED_SHEET, IN_PROGRESS_SHEET, LOG_SHEET, NOT_STARTED_SHEET, Settings, SHEET_KEY_TO_NAME
 from bot.keyboards import KeyboardFactory
-from bot.sheets import (
+from shared.api_client import (
     SheetsServiceError,
     append_task,
     delete_row,

@@ -1,6 +1,6 @@
 # vrk_rso_bot
 
-Telegram-бот для управления задачами с хранением данных в Google Sheets.
+Telegram-бот и бот для мессенджера **Max** для управления задачами и авариями с хранением данных в **Google Sheets**. Доступ к таблице выполняет отдельный **FastAPI**-сервис; оба бота ходят в него по HTTP с заголовком `X-API-Key`.
 
 Бот поддерживает две роли:
 - обычный пользователь: может добавить задачу;
@@ -21,24 +21,44 @@ Telegram-бот для управления задачами с хранение
 ## Стек проекта
 
 - Python 3.11+
-- `python-telegram-bot` v20+
-- `gspread`
-- `google-auth-oauthlib`
+- **API:** FastAPI, uvicorn, gspread, pydantic
+- **Telegram:** python-telegram-bot v20+, httpx
+- **Max:** httpx, long polling `GET /updates`
 - `python-dotenv`
 
 ## Структура проекта
 
 ```text
-bot/
-├── main.py
-├── config.py
-├── sheets.py
-├── states.py
-├── keyboards.py
-└── handlers/
-    ├── common.py
-    ├── user.py
-    └── admin.py
+vrk_rso_bot/
+├── api/                      # FastAPI: Google Sheets (gspread только здесь)
+│   ├── main.py
+│   ├── config.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── routers/
+│   ├── schemas/
+│   ├── services/
+│   └── dependencies/
+├── shared/
+│   └── api_client.py         # HTTP-клиент к API для ботов
+├── telegram_bot/
+│   ├── bot/                  # пакет bot: main, config, handlers, keyboards, states
+│   ├── Dockerfile
+│   └── requirements.txt
+├── max_bot/
+│   ├── main.py               # long polling, диспетчеризация
+│   ├── config.py
+│   ├── max_api.py
+│   ├── keyboards.py
+│   ├── states.py
+│   ├── handlers/
+│   ├── Dockerfile
+│   └── requirements.txt
+├── docker-compose.yml
+├── .env.example
+├── requirements.txt          # полный список пакетов для локальной разработки (все сервисы)
+├── run.py                    # точка входа Telegram-бота (локально)
+└── README.md
 ```
 
 ## Структура Google Sheets
@@ -156,9 +176,13 @@ vrk_rso_bot/
 ├── .env
 ├── .env.example
 ├── credentials.json
+├── docker-compose.yml
+├── api/
+├── shared/
+├── telegram_bot/
+├── max_bot/
 ├── requirements.txt
-├── README.md
-└── bot/
+└── README.md
 ```
 
 ## Как выдать доступ сервисному аккаунту к таблице
@@ -199,19 +223,12 @@ Copy-Item .env.example .env
 
 И заполните значения:
 
-```env
-BOT_TOKEN=1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-ADMIN_IDS=123456789,987654321
-SPREADSHEET_ID=1MLdHFoSgTA8nujYeJnqZzc6BdGDtnbQRzUPJ2cRZ2UY
-GOOGLE_CREDENTIALS_FILE=credentials.json
-```
+Полный список переменных — в [`.env.example`](.env.example). Кратко:
 
-Описание переменных:
-
-- `BOT_TOKEN` — токен Telegram-бота от `@BotFather`.
-- `ADMIN_IDS` — Telegram ID администраторов через запятую без пробелов или с пробелами, оба варианта поддерживаются.
-- `SPREADSHEET_ID` — ID Google таблицы.
-- `GOOGLE_CREDENTIALS_FILE` — путь к файлу сервисного аккаунта. Можно указывать относительный путь, например `credentials.json`.
+- `BOT_TOKEN`, `MAX_BOT_TOKEN` — токены ботов;
+- `API_KEY`, `API_BASE_URL` — доступ ботов к сервису таблицы;
+- `TELEGRAM_ADMIN_IDS`, `MAX_ADMIN_IDS` — ID администраторов по платформам (при пустых значениях для Telegram можно использовать устаревший `ADMIN_IDS`);
+- `SPREADSHEET_ID`, `GOOGLE_CREDENTIALS_FILE` — таблица и путь к JSON сервисного аккаунта (для API в Docker обычно `/app/credentials.json`).
 
 ## Как узнать свой Telegram ID
 
@@ -229,72 +246,91 @@ GOOGLE_CREDENTIALS_FILE=credentials.json
 
 ### 1\. Установка зависимостей
 
-**Windows (рекомендуется):**
+Одной командой из корня репозитория (все сервисы — удобно для тестов):
 
 ```powershell
 py -3 -m pip install -r requirements.txt
 ```
 
-Если `pip` устарел:
+Если `pip` долго висит на `pypi.org` и пишет `Read timed out`, увеличьте таймаут и число повторов (часто помогает при медленном или нестабильном интернете):
 
 ```powershell
-py -3 -m pip install --upgrade pip
-py -3 -m pip install -r requirements.txt
+py -3 -m pip install -r requirements.txt --default-timeout=120 --retries 10
 ```
 
-**Linux / macOS:**
+Либо один раз настроить зеркало PyPI ближе к вам (пример — зеркало Яндекса) и снова выполнить установку:
 
-Убедитесь, что по умолчанию используется Python 3\.11+.
+```powershell
+py -3 -m pip install -r requirements.txt -i https://mirror.yandex.ru/mirrors/pypi/simple/ --trusted-host mirror.yandex.ru
+```
 
-```bash
-python3 -m pip install -r requirements.txt
+Либо только нужные части:
+
+```powershell
+py -3 -m pip install -r api/requirements.txt
+py -3 -m pip install -r telegram_bot/requirements.txt
+py -3 -m pip install -r max_bot/requirements.txt
 ```
 
 ### 2\. Проверка настроек
 
-- убедитесь, что в корне проекта есть `.env` (настроен по `.env.example`);
-- убедитесь, что в корне лежит `credentials.json`;
-- проверьте, что сервисному аккаунту выдан доступ к Google таблице (см. раздел выше).
+- в корне проекта есть `.env` (шаблон — [`.env.example`](.env.example));
+- для API доступны `credentials.json` и переменные `SPREADSHEET_ID`, `API_KEY`, `GOOGLE_CREDENTIALS_FILE` (локально часто `GOOGLE_CREDENTIALS_FILE=credentials.json`);
+- у ботов в `.env` заданы `API_BASE_URL` и тот же `API_KEY`, что и у API;
+- сервисному аккаунту Google выдан доступ к таблице (см. раздел выше).
 
-### 3\. Запуск бота локально
+### 3\. Запуск процессов локально
 
-**Windows:**
+Рабочий каталог — **корень репозитория**.
 
-Рекомендуемый вариант (через удобный скрипт):
+**Терминал 1 — API:** для импорта пакета `api` задайте `PYTHONPATH` на корень репозитория.
 
 ```powershell
+cd путь\к\vrk_rso_bot
+$env:PYTHONPATH = "."
+py -3 -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Проверка: откройте в браузере `http://127.0.0.1:8000/health` — ожидается `{"status":"ok"}`.
+
+**Терминал 2 — Telegram-бот** (после старта API). В `.env` укажите `API_BASE_URL=http://127.0.0.1:8000` (или `http://localhost:8000`). Скрипт [`run.py`](run.py) сам добавляет в `sys.path` корень репозитория и каталог `telegram_bot`.
+
+```powershell
+cd путь\к\vrk_rso_bot
 py -3 run.py
 ```
 
-Альтернативный вариант (через модуль пакета):
+Альтернатива: из корня с `PYTHONPATH=.;telegram_bot` выполнить `py -3 -m bot.main`.
+
+**Терминал 3 — Max-бот** (опционально): те же `API_BASE_URL` и `API_KEY`, плюс `MAX_BOT_TOKEN` и `MAX_ADMIN_IDS`.
 
 ```powershell
-py -3 -m bot.main
+cd путь\к\vrk_rso_bot
+$env:PYTHONPATH = "."
+py -3 -m max_bot.main
 ```
 
-Альтернативный вариант:
+Остановка любого процесса: `Ctrl+C` в соответствующем терминале.
 
-```powershell
-py -3 bot\main.py
-```
+На **Linux / macOS** замените `$env:PYTHONPATH = "."` на `export PYTHONPATH=.`.
 
-**Linux / macOS:**
+### 4\. Локальное тестирование
 
-Рекомендуемый вариант:
+1. **Health API** — `GET http://127.0.0.1:8000/health`.
+
+2. **Защищённый эндпоинт** (подставьте свой `API_KEY` из `.env`; в URL — имя листа из таблицы, ниже — лист `Не начатые`):
 
 ```bash
-python3 run.py
+curl -s -H "X-API-Key: ВАШ_API_KEY" "http://127.0.0.1:8000/api/v1/sheets/tasks/%D0%9D%D0%B5%20%D0%BD%D0%B0%D1%87%D0%B0%D1%82%D1%8B%D0%B5"
 ```
 
-Альтернативный вариант:
+Если ключ неверный — ответ `401`. При корректном доступе к таблице — JSON с полем `tasks`.
 
-```bash
-python3 -m bot.main
-```
+3. **Сквозной сценарий:** поднять API → запустить одного бота → в мессенджере выполнить `/start` и пройти простой сценарий (например, список задач или сообщение об аварии). Записи должны появляться в Google Sheets.
 
-После запуска бот начнет работать через long polling и будет принимать обновления от Telegram.
+4. **Telegram:** не запускайте две копии бота с одним `BOT_TOKEN` (polling и Docker одновременно) — будет конфликт `getUpdates`.
 
-Остановить бота можно через `Ctrl + C` в терминале.
+5. **Без реальных мессенджеров** можно ограничиться проверкой API через `curl`/Postman и логами `uvicorn`.
 
 ## Как работает логика ролей
 
@@ -314,7 +350,7 @@ python3 -m bot.main
 
 ### Администратор
 
-Если Telegram ID пользователя есть в `ADMIN_IDS`, в главном меню он увидит:
+Если Telegram ID пользователя есть в `TELEGRAM_ADMIN_IDS` (или в `ADMIN_IDS` для обратной совместимости), в главном меню он увидит:
 
 - `➕ Добавить задачу`
 - `📋 Задачи к выполнению`
@@ -341,16 +377,11 @@ python3 -m bot.main
 
 ## Работа с Google Sheets
 
-В проекте используется сервисный слой `bot/sheets.py`.
+Доступ к таблице реализован в сервисе **`api`** (`api/services/sheets_service.py`): те же операции, что раньше в `sheets.py`, доступны по HTTP (`/api/v1/sheets/...`) с заголовком `X-API-Key`.
 
-Он предоставляет функции:
-- `get_all_tasks(sheet_name)`
-- `append_task(sheet_name, row_data)`
-- `update_cell(sheet_name, row_index, col_index, value)`
-- `delete_row(sheet_name, row_index)`
-- `move_task(from_sheet, to_sheet, row_index, extra_data)`
+Боты вызывают их через **`shared/api_client.py`** (`APIClient` / те же имена функций, что у модульного API).
 
-Для всех операций записи используется `asyncio.Lock()`, чтобы избежать гонок при одновременных действиях нескольких пользователей.
+Для всех операций записи в API используется `asyncio.Lock()`, чтобы избежать гонок при одновременных действиях нескольких пользователей.
 
 ## Логирование
 
@@ -438,15 +469,14 @@ docker compose version
 
 Убедитесь, что локально в корне проекта есть:
 
-- `.env` — с корректными значениями `BOT_TOKEN`, `ADMIN_IDS`, `SPREADSHEET_ID`, `GOOGLE_CREDENTIALS_FILE`;
-- `credentials.json` — ключ сервисного аккаунта;
-- `Dockerfile`;
+- `.env` — см. шаблон [`.env.example`](.env.example): `BOT_TOKEN`, `MAX_BOT_TOKEN`, `API_KEY`, `API_BASE_URL`, `SPREADSHEET_ID`, `GOOGLE_CREDENTIALS_FILE`, `TELEGRAM_ADMIN_IDS`, `MAX_ADMIN_IDS`;
+- `credentials.json` — ключ сервисного аккаунта (монтируется в контейнер **api**);
 - `docker-compose.yml`.
 
-Проверьте, что в `.env` путь к ключу задан как:
+Для Docker задайте путь к ключу для сервиса API, например:
 
 ```env
-GOOGLE_CREDENTIALS_FILE=credentials.json
+GOOGLE_CREDENTIALS_FILE=/app/credentials.json
 ```
 
 ### 3\. Копирование проекта на сервер
@@ -491,26 +521,19 @@ cd vrk_rso_bot
 docker compose build
 ```
 
-Команда:
-- соберет образ из `Dockerfile`;
-- установит зависимости из `requirements.txt`;
-- скопирует код бота.
+Команда собирает три образа: `api`, `telegram_bot`, `max_bot` (у каждого свой `Dockerfile` и `requirements.txt`).
 
-### 5\. Запуск бота в контейнере
+### 5\. Запуск сервисов
 
-Всё еще в корне проекта:
+В корне проекта:
 
 ```bash
 docker compose up -d
 ```
 
-Опции:
-- `-d` — запуск в фоне (detached mode);
-- сервис `bot` описан в `docker-compose.yml` и:
-  - подхватывает переменные из `.env`;
-  - монтирует `credentials.json` внутрь контейнера как `/app/credentials.json` (только чтение);
-  - запускает `python -m bot.main`;
-  - перезапускается автоматически (`restart: unless-stopped`).
+- **`api`** — `http://0.0.0.0:8000`, эндпоинты `/api/v1/sheets/...`, проверка `X-API-Key`, монтирование `credentials.json`;
+- **`telegram_bot`** — `python -m bot.main`, `depends_on: api`, `API_BASE_URL=http://api:8000`;
+- **`max_bot`** — `python -m max_bot.main`, `depends_on: api`.
 
 ### 6\. Проверка логов
 
@@ -520,9 +543,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-В логах вы увидите:
-- запуск приложения;
-- возможные ошибки подключения к Telegram или Google Sheets.
+В логах вы увидите запуск API и ботов, а также ошибки подключения к Telegram, Max или Google Sheets.
 
 Остановить просмотр логов: `Ctrl + C`.
 
@@ -571,17 +592,9 @@ docker compose up -d
 5. Выдайте `client_email` доступ к Google таблице.
 6. Скопируйте `.env.example` в `.env`.
 7. Заполните переменные окружения.
-8. Установите зависимости:
+8. Установите зависимости API и Telegram-бота и поднимите API, затем запустите `py -3 run.py` (см. раздел «Локальный запуск»).
 
-```powershell
-py -3 -m pip install -r requirements.txt
-```
-
-9. Запустите бота:
-
-```powershell
-py -3 run.py
-```
+9. При необходимости установите зависимости Max-бота и запустите `python -m max_bot.main`.
 
 ## Лицензия
 
