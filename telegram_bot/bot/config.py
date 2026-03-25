@@ -7,6 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from shared.local_dev import warn_if_api_base_url_uses_docker_hostname
+
 
 NOT_STARTED_SHEET = "Не начатые"
 IN_PROGRESS_SHEET = "В работе"
@@ -86,6 +88,8 @@ def load_settings() -> Settings:
 
     api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000").strip().rstrip("/")
     api_key = os.getenv("API_KEY", "").strip()
+
+    warn_if_api_base_url_uses_docker_hostname(api_base_url)
 
     if not bot_token:
         raise ValueError("Не задана переменная окружения BOT_TOKEN.")

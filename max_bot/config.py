@@ -7,6 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from shared.local_dev import warn_if_api_base_url_uses_docker_hostname
+
 
 NOT_STARTED_SHEET = "Не начатые"
 IN_PROGRESS_SHEET = "В работе"
@@ -32,6 +34,31 @@ BACK_BUTTON = "◀️ Назад"
 HOME_BUTTON = "🏠 Главное меню"
 
 APP_TIMEZONE = timezone(timedelta(hours=3))
+
+
+def normalize_max_button_text(text: str) -> str:
+    """Убирает вариативность пробелов и невидимых символов в тексте с кнопки MAX."""
+
+    return " ".join(
+        (text or "")
+        .replace("\ufe0f", "")
+        .replace("\u200b", "")
+        .strip()
+        .split()
+    )
+
+
+def is_max_report_accident_text(text: str | None) -> bool:
+    """Текст как у кнопки «Сообщить об аварии» (callback type message или ручной ввод)."""
+
+    if not text:
+        return False
+    n = normalize_max_button_text(text)
+    if not n:
+        return False
+    if n == normalize_max_button_text(REPORT_ACCIDENT_BUTTON):
+        return True
+    return n == normalize_max_button_text("Сообщить об аварии")
 
 MAX_API_BASE_DEFAULT = "https://platform-api.max.ru"
 
@@ -79,6 +106,7 @@ def load_settings() -> Settings:
 
     api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000").strip().rstrip("/")
     api_key = os.getenv("API_KEY", "").strip()
+    warn_if_api_base_url_uses_docker_hostname(api_base_url)
     max_api_base = os.getenv("MAX_API_BASE", MAX_API_BASE_DEFAULT).strip().rstrip("/")
 
     if not token:

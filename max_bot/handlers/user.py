@@ -74,18 +74,26 @@ class UserTaskHandlerMax(BaseMaxHandler):
         display_name = get_user_display_name(ctx.user_proxy)
         details = f"Срочность: {urgency_text}. Кто сообщил: {who_text}"
         await write_log(display_name, "Сообщение об аварии", short_text, ACCIDENTS_SHEET, details)
-        await self._notify_admins_about_accident(
-            ctx,
-            short_text=short_text,
-            detail_text=detail_text,
-            urgency_text=urgency_text,
-            who_text=who_text,
-            event_time=event_time,
-        )
+
+        should_notify_admins = not self.settings.is_admin(ctx.user_id)
+        if should_notify_admins:
+            await self._notify_admins_about_accident(
+                ctx,
+                short_text=short_text,
+                detail_text=detail_text,
+                urgency_text=urgency_text,
+                who_text=who_text,
+                event_time=event_time,
+            )
 
         await self.message_manager.delete_step_messages(ctx)
         self._clear_accident_data(ctx.user_data)
-        await self.send_text(ctx, "✅ Сообщение об аварии принято. Администраторы уведомлены.")
+        done_text = (
+            "✅ Сообщение об аварии принято. Администраторы уведомлены."
+            if should_notify_admins
+            else "✅ Сообщение об аварии принято."
+        )
+        await self.send_text(ctx, done_text)
         await self.show_main_menu(ctx.user_id, ctx.user_data)
         return CONV_END
 

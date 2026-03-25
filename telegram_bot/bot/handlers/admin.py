@@ -876,6 +876,7 @@ class AdminTaskHandler(BaseHandler):
             text=confirmation_text,
             parse_mode=ParseMode.MARKDOWN_V2,
             reply_markup=KeyboardFactory.delete_confirm_keyboard(sheet_key, row_index),
+            disable_notification=True,
         )
         self.message_manager.remember_message(context, msg.message_id)
 

@@ -4,7 +4,8 @@ import asyncio
 import logging
 import re
 import sys
-from max_bot.config import BACK_BUTTON, HOME_BUTTON, load_settings
+from typing import Any
+from max_bot.config import BACK_BUTTON, HOME_BUTTON, is_max_report_accident_text, load_settings
 from max_bot.handlers.admin import AdminTaskHandler
 from max_bot.handlers.common_max import CommonHandlersMax, MaxCtx, MaxMessageManager
 from max_bot.handlers.user import UserTaskHandlerMax
@@ -36,26 +37,69 @@ def configure_logging() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         stream=sys.stdout,
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _parse_callback_update(raw: dict) -> tuple[str, str, int | None, str | None, dict | None]:
-    """callback_id, payload, user_id, message_mid, user dict"""
-    cb = raw.get("callback") or raw.get("message_callback") or raw
-    callback_id = str(cb.get("callback_id") or cb.get("id") or "")
-    payload = cb.get("payload", "")
-    if not isinstance(payload, str):
-        payload = str(payload)
+    """Разбор message_callback (см. MessageCallbackUpdate в MAX Bot API)."""
+
+    cb: dict[str, Any] = {}
+    if isinstance(raw.get("callback"), dict):
+        cb = raw["callback"]
+    elif isinstance(raw.get("message_callback"), dict):
+        cb = raw["message_callback"]
+    else:
+        msg_outer = raw.get("message")
+        if isinstance(msg_outer, dict):
+            inner = msg_outer.get("callback") or msg_outer.get("message_callback")
+            if isinstance(inner, dict):
+                cb = inner
+    if not cb:
+        cb = raw if isinstance(raw, dict) else {}
+
+    # У официального API сообщение с кнопками лежит в корне апдейта: { "callback": {...}, "message": {...} }
+    msg_for_mid: dict[str, Any] = {}
+    if isinstance(raw.get("message"), dict):
+        msg_for_mid = raw["message"]
+    elif isinstance(cb.get("message"), dict):
+        msg_for_mid = cb["message"]
+
+    callback_id = str(
+        cb.get("callback_id")
+        or cb.get("id")
+        or raw.get("callback_id")
+        or raw.get("id")
+        or ""
+    )
+    payload_raw = cb.get("payload", raw.get("payload", ""))
+    if isinstance(payload_raw, str):
+        payload = payload_raw.strip()
+    else:
+        payload = str(payload_raw).strip() if payload_raw is not None else ""
+
     user = cb.get("user")
     if not isinstance(user, dict):
         user = {}
+
     uid = user.get("user_id")
     if uid is None:
-        msg = cb.get("message") if isinstance(cb.get("message"), dict) else {}
-        uid = sender_user_id(msg)
+        uid = sender_user_id(msg_for_mid)
+    if uid is None and isinstance(raw.get("message"), dict):
+        raw_msg = raw["message"]
+        uid = sender_user_id(raw_msg)
+        if not user and isinstance(raw_msg.get("sender"), dict):
+            user = raw_msg["sender"]
+        if not msg_for_mid:
+            msg_for_mid = raw_msg
+
+    if uid is None:
+        uid = sender_user_id(msg_for_mid)
+
     if uid is not None:
         uid = int(uid)
-    msg = cb.get("message") if isinstance(cb.get("message"), dict) else {}
-    mid = _extract_mid(msg)
+
+    mid = _extract_mid(msg_for_mid)
     return callback_id, payload, uid, mid, user if user else None
 
 
@@ -82,6 +126,10 @@ async def main_async() -> None:
 
     marker: int | None = None
     logger.info("Max-бот запущен, long polling /updates")
+    logger.info(
+        "Если нажатия не доходят: в MAX нельзя одновременно Webhook и long polling — "
+        "отключите webhook (DELETE /subscriptions) или не запускайте второй процесс бота."
+    )
 
     try:
         while True:
@@ -112,6 +160,7 @@ async def main_async() -> None:
                 elif ut == "message_callback":
                     cb_id, payload, uid, cb_mid, user_d = _parse_callback_update(upd)
                     if uid is None:
+                        logger.warning("message_callback без user_id: %s", list(upd.keys()))
                         continue
                     ud = _ud(uid)
                     ctx = MaxCtx(
@@ -125,6 +174,18 @@ async def main_async() -> None:
                         sender=user_d,
                     )
                     await handle_callback(ctx, settings, common, user_h, admin_h)
+                elif ut == "bot_started":
+                    u = upd.get("user")
+                    if not isinstance(u, dict) or u.get("user_id") is None:
+                        continue
+                    uid = int(u["user_id"])
+                    ud = _ud(uid)
+                    ud.clear()
+                    user_states.pop(uid, None)
+                    await mm.cleanup_session(uid, ud)
+                    await common.start_clear(uid, ud)
+                else:
+                    logger.warning("MAX: пропуск update_type=%r keys=%s", ut, list(upd.keys()))
     finally:
         await max_api.aclose()
 
@@ -194,6 +255,10 @@ async def handle_message(
             user_states.pop(uid, None)
         else:
             user_states[uid] = nxt
+        return
+
+    if is_max_report_accident_text(text):
+        user_states[uid] = await user_h.start(ctx)
         return
 
     await common.send_text(ctx, "Нажмите /start или выберите действие в меню.")
@@ -267,14 +332,12 @@ async def handle_callback(
 ) -> None:
     uid = ctx.user_id
     ud = ctx.user_data
-    p = ctx.callback_payload or ""
+    p = (ctx.callback_payload or "").strip()
     is_adm = settings.is_admin(uid)
 
-    if ctx.callback_id:
-        try:
-            await ctx.answer_callback()
-        except Exception:
-            logger.debug("answer_callback пропущен", exc_info=True)
+    # Для текущих сценариев нам не нужен отдельный ответ на callback:
+    # после нажатия мы сразу отправляем/обновляем сообщения сами.
+    # Вызов POST /answers без notification/message даёт 400 и только шумит в логах.
 
     if p == "nav_home" or p == "home_menu":
         if is_adm:

@@ -37,6 +37,10 @@ class APIClient:
             base_url=self._base,
             headers={"X-API-Key": api_key},
             timeout=timeout,
+            # Это внутренний сервис проекта (localhost / docker service name),
+            # ему не нужны системные HTTP(S)_PROXY. Иначе локальные запросы
+            # могут уходить в прокси и зависать по ReadTimeout.
+            trust_env=False,
         )
 
     async def aclose(self) -> None:

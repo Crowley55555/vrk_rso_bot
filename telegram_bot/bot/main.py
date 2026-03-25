@@ -36,6 +36,10 @@ def configure_logging() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         stream=sys.stdout,
     )
+    # python-telegram-bot ходит в Telegram через httpx; на INFO httpx пишет полный URL
+    # вида https://api.telegram.org/bot<TOKEN>/method — токен оказывается в логах.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -58,9 +62,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if isinstance(update, Update) and update.effective_chat:
         try:
+            uid = update.effective_user.id if update.effective_user else None
+            quiet_for_admin = load_settings().is_admin(uid)
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="Произошла внутренняя ошибка. Попробуйте повторить действие позже.",
+                disable_notification=quiet_for_admin,
             )
         except TimedOut:
             log.warning("Не удалось отправить сообщение об ошибке пользователю: Telegram API timed out.")

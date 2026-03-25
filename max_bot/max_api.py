@@ -26,11 +26,14 @@ def _extract_mid(message: dict[str, Any] | None) -> str | None:
 def message_body_text(message: dict[str, Any] | None) -> str:
     if not message:
         return ""
+    top = message.get("text")
+    if isinstance(top, str) and top.strip():
+        return top.strip()
     body = message.get("body")
-    if not isinstance(body, dict):
-        return ""
-    text = body.get("text")
-    return (text or "").strip() if isinstance(text, str) else ""
+    if isinstance(body, dict):
+        text = body.get("text")
+        return (text or "").strip() if isinstance(text, str) else ""
+    return ""
 
 
 def sender_user_id(message: dict[str, Any] | None) -> int | None:
@@ -63,7 +66,7 @@ class MaxApi:
         marker: int | None = None,
         limit: int = 100,
         timeout: int = 30,
-        types: tuple[str, ...] = ("message_created", "message_callback"),
+        types: tuple[str, ...] = ("message_created", "message_callback", "bot_started"),
     ) -> tuple[list[dict[str, Any]], int | None]:
         params: list[tuple[str, str | int]] = [
             ("limit", limit),
@@ -71,8 +74,9 @@ class MaxApi:
         ]
         if marker is not None:
             params.append(("marker", marker))
-        for t in types:
-            params.append(("types", t))
+        if types:
+            # В спецификации MAX query types — одна строка (через запятую), не повторяющиеся ключи.
+            params.append(("types", ",".join(types)))
 
         try:
             response = await self._client.get("/updates", params=params)
@@ -165,12 +169,14 @@ class MaxApi:
         except httpx.HTTPError as e:
             logger.debug("Не удалось удалить сообщение %s: %s", message_id, e)
 
-    async def answer_callback(self, callback_id: str, user_id: int) -> None:
+    async def answer_callback(self, callback_id: str, _user_id: int) -> None:
+        """POST /answers?callback_id=… — см. https://dev.max.ru/docs-api/methods/POST/answers"""
         try:
             response = await self._client.post(
-                f"/answers/callbacks/{callback_id}",
-                json={"user_id": user_id},
+                "/answers",
+                params={"callback_id": callback_id},
+                json={},
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            logger.debug("answer_callback %s: %s", callback_id, e)
+            logger.warning("answer_callback callback_id=%s: %s", callback_id, e)

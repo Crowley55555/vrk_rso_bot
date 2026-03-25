@@ -126,18 +126,27 @@ class UserTaskHandler(BaseHandler):
         display_name = get_user_display_name(update.effective_user)
         details = f"Срочность: {urgency_text}. Кто сообщил: {who_text}"
         await write_log(display_name, "Сообщение об аварии", short_text, ACCIDENTS_SHEET, details)
-        await self._notify_admins_about_accident(
-            context,
-            short_text=short_text,
-            detail_text=detail_text,
-            urgency_text=urgency_text,
-            who_text=who_text,
-            event_time=event_time,
-        )
+
+        reporter = update.effective_user
+        should_notify_admins = reporter is not None and not self.settings.is_admin(reporter.id)
+        if should_notify_admins:
+            await self._notify_admins_about_accident(
+                context,
+                short_text=short_text,
+                detail_text=detail_text,
+                urgency_text=urgency_text,
+                who_text=who_text,
+                event_time=event_time,
+            )
 
         await self.message_manager.delete_step_messages(update, context)
         self._clear_accident_data(context)
-        await self.send_text(update, context, "✅ Сообщение об аварии принято. Администраторы уведомлены.")
+        done_text = (
+            "✅ Сообщение об аварии принято. Администраторы уведомлены."
+            if should_notify_admins
+            else "✅ Сообщение об аварии принято."
+        )
+        await self.send_text(update, context, done_text)
         await self.show_main_menu(update, context)
         return ConversationHandler.END
 
@@ -190,6 +199,7 @@ class UserTaskHandler(BaseHandler):
             "Введите краткое описание аварии и укажите на каком участке она произошла:",
             reply_markup=KeyboardFactory.navigation_menu(include_back=False),
             remember_as_last=True,
+            disable_notification=True,
         )
 
     async def _ask_accident_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -200,6 +210,7 @@ class UserTaskHandler(BaseHandler):
             "Введите подробное описание произошедшего (или «-» чтобы пропустить):",
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
+            disable_notification=True,
         )
 
     async def _ask_accident_who(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -210,6 +221,7 @@ class UserTaskHandler(BaseHandler):
             "Введите ваши ФИО:",
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
+            disable_notification=True,
         )
 
     async def _ask_accident_urgency(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -220,6 +232,7 @@ class UserTaskHandler(BaseHandler):
             "Как срочно требуется ремонт? (или «-» чтобы пропустить):",
             reply_markup=KeyboardFactory.navigation_menu(),
             remember_as_last=True,
+            disable_notification=True,
         )
 
     async def _notify_admins_about_accident(
@@ -232,7 +245,7 @@ class UserTaskHandler(BaseHandler):
         who_text: str,
         event_time: str,
     ) -> None:
-        """Отправляет уведомление об аварии всем администраторам."""
+        """Рассылка «Новая авария» админам; вызывать только для не-админов (см. finish_creation)."""
 
         message = (
             "🚨 *Новая авария\\!*\n\n"
