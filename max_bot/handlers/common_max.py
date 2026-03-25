@@ -24,7 +24,7 @@ from max_bot.config import (
     TASKS_IN_PROGRESS_BUTTON,
     TASKS_TODO_BUTTON,
 )
-from max_bot.keyboards import KeyboardFactory
+from max_bot.keyboards import KeyboardFactory, merge_inline_keyboard_attachments
 from max_bot.max_api import MaxApi
 from shared.api_client import SheetsServiceError, get_all_tasks
 
@@ -403,12 +403,10 @@ class CommonHandlersMax(BaseMaxHandler):
         await self.send_preformatted_text(
             ctx,
             TextFormatter.task_details(task),
-            attachments=KeyboardFactory.task_detail_keyboard(sheet_key, row_index, is_admin=is_adm),
-        )
-        await self.send_text(
-            ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.task_detail_keyboard(sheet_key, row_index, is_admin=is_adm),
+                KeyboardFactory.navigation_menu(),
+            ),
         )
 
     async def _show_task_list(self, ctx: MaxCtx, sheet_key: str) -> None:
@@ -439,10 +437,8 @@ class CommonHandlersMax(BaseMaxHandler):
         await self.send_text(
             ctx,
             f"{'Выберите аварию' if sheet_key == 'accidents' else 'Выберите задачу'}{note}",
-            attachments=KeyboardFactory.task_list_keyboard(payload, sheet_key),
-        )
-        await self.send_text(
-            ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.task_list_keyboard(payload, sheet_key),
+                KeyboardFactory.navigation_menu(),
+            ),
         )

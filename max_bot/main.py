@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import sys
+import time
 from typing import Any
 from max_bot.config import BACK_BUTTON, HOME_BUTTON, is_max_report_accident_text, load_settings
 from max_bot.handlers.admin import AdminTaskHandler
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 user_states: dict[int, int] = {}
 user_data: dict[int, dict] = {}
+# MAX после callback по «Назад»/«Домой» иногда шлёт ещё message_created с тем же текстом — игнорируем короткое окно.
+_suppress_nav_text_echo_until: dict[int, float] = {}
 
 
 def _ud(uid: int) -> dict:
@@ -114,6 +117,61 @@ def _parse_message_created(raw: dict) -> tuple[int | None, str, str | None, dict
     return uid, text, mid, sender
 
 
+def _partition_updates(updates: list[dict[str, Any]]) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Порядок важен: сначала callback, потом message_created — иначе дублируются сценарии по тексту кнопки."""
+
+    bot_started: list[dict] = []
+    callbacks: list[dict] = []
+    messages: list[dict] = []
+    other: list[dict] = []
+    for u in updates:
+        ut = u.get("update_type")
+        if ut == "bot_started":
+            bot_started.append(u)
+        elif ut == "message_callback":
+            callbacks.append(u)
+        elif ut == "message_created":
+            messages.append(u)
+        else:
+            other.append(u)
+    return bot_started, callbacks, messages, other
+
+
+def _mark_nav_callback_echo_suppression(uid: int) -> None:
+    _suppress_nav_text_echo_until[uid] = time.monotonic() + 0.85
+
+
+def _should_suppress_nav_text_echo(uid: int) -> bool:
+    until = _suppress_nav_text_echo_until.get(uid)
+    if until is None:
+        return False
+    if time.monotonic() >= until:
+        _suppress_nav_text_echo_until.pop(uid, None)
+        return False
+    return True
+
+
+def _user_in_accident_wizard(state: int | None) -> bool:
+    if state is None:
+        return False
+    s = int(state)
+    return int(UserStates.ACCIDENT_SHORT) <= s <= int(UserStates.ACCIDENT_URGENCY)
+
+
+def _admin_in_add_task_wizard(state: int | None) -> bool:
+    if state is None:
+        return False
+    s = AdminStates(int(state))
+    return AdminStates.ADD_TASK_NAME <= s <= AdminStates.ADD_DEADLINE
+
+
+def _admin_in_add_accident_wizard(state: int | None) -> bool:
+    if state is None:
+        return False
+    s = int(state)
+    return int(AdminStates.ADMIN_ACCIDENT_SHORT) <= s <= int(AdminStates.ADMIN_ACCIDENT_WHO)
+
+
 async def main_async() -> None:
     settings = load_settings()
     configure_api_client(settings.api_base_url, settings.api_key)
@@ -140,52 +198,56 @@ async def main_async() -> None:
                 await asyncio.sleep(5)
                 continue
 
-            for upd in updates:
+            bot_u, cb_u, msg_u, other_u = _partition_updates(updates)
+
+            for upd in bot_u:
+                u = upd.get("user")
+                if not isinstance(u, dict) or u.get("user_id") is None:
+                    continue
+                uid = int(u["user_id"])
+                ud = _ud(uid)
+                ud.clear()
+                user_states.pop(uid, None)
+                await mm.cleanup_session(uid, ud)
+                await common.start_clear(uid, ud)
+
+            for upd in cb_u:
+                cb_id, payload, uid, cb_mid, user_d = _parse_callback_update(upd)
+                if uid is None:
+                    logger.warning("message_callback без user_id: %s", list(upd.keys()))
+                    continue
+                ud = _ud(uid)
+                ctx = MaxCtx(
+                    user_id=uid,
+                    user_data=ud,
+                    max_api=max_api,
+                    message_manager=mm,
+                    callback_payload=payload,
+                    callback_id=cb_id or None,
+                    callback_message_mid=cb_mid,
+                    sender=user_d,
+                )
+                await handle_callback(ctx, settings, common, user_h, admin_h)
+
+            for upd in msg_u:
+                uid, text, mid, sender = _parse_message_created(upd)
+                if uid is None:
+                    continue
+                ud = _ud(uid)
+                ctx = MaxCtx(
+                    user_id=uid,
+                    user_data=ud,
+                    max_api=max_api,
+                    message_manager=mm,
+                    text=text,
+                    incoming_message_mid=mid,
+                    sender=sender,
+                )
+                await handle_message(ctx, settings, common, user_h, admin_h)
+
+            for upd in other_u:
                 ut = upd.get("update_type")
-                if ut == "message_created":
-                    uid, text, mid, sender = _parse_message_created(upd)
-                    if uid is None:
-                        continue
-                    ud = _ud(uid)
-                    ctx = MaxCtx(
-                        user_id=uid,
-                        user_data=ud,
-                        max_api=max_api,
-                        message_manager=mm,
-                        text=text,
-                        incoming_message_mid=mid,
-                        sender=sender,
-                    )
-                    await handle_message(ctx, settings, common, user_h, admin_h)
-                elif ut == "message_callback":
-                    cb_id, payload, uid, cb_mid, user_d = _parse_callback_update(upd)
-                    if uid is None:
-                        logger.warning("message_callback без user_id: %s", list(upd.keys()))
-                        continue
-                    ud = _ud(uid)
-                    ctx = MaxCtx(
-                        user_id=uid,
-                        user_data=ud,
-                        max_api=max_api,
-                        message_manager=mm,
-                        callback_payload=payload,
-                        callback_id=cb_id or None,
-                        callback_message_mid=cb_mid,
-                        sender=user_d,
-                    )
-                    await handle_callback(ctx, settings, common, user_h, admin_h)
-                elif ut == "bot_started":
-                    u = upd.get("user")
-                    if not isinstance(u, dict) or u.get("user_id") is None:
-                        continue
-                    uid = int(u["user_id"])
-                    ud = _ud(uid)
-                    ud.clear()
-                    user_states.pop(uid, None)
-                    await mm.cleanup_session(uid, ud)
-                    await common.start_clear(uid, ud)
-                else:
-                    logger.warning("MAX: пропуск update_type=%r keys=%s", ut, list(upd.keys()))
+                logger.warning("MAX: пропуск update_type=%r keys=%s", ut, list(upd.keys()))
     finally:
         await max_api.aclose()
 
@@ -220,6 +282,10 @@ async def handle_message(
     st = user_states.get(uid)
 
     if text in (BACK_BUTTON, HOME_BUTTON):
+        if _should_suppress_nav_text_echo(uid):
+            if ctx.incoming_message_mid:
+                await ctx.message_manager.delete_message(uid, ud, ctx.incoming_message_mid)
+            return
         if is_adm:
             res = await admin_h.go_back(ctx) if st else await admin_h.go_home(ctx)
             _set_state_after_admin_int(uid, res)
@@ -340,6 +406,7 @@ async def handle_callback(
     # Вызов POST /answers без notification/message даёт 400 и только шумит в логах.
 
     if p == "nav_home" or p == "home_menu":
+        _mark_nav_callback_echo_suppression(uid)
         if is_adm:
             _set_state_after_admin_int(uid, await admin_h.go_home(ctx))
         else:
@@ -348,6 +415,7 @@ async def handle_callback(
         return
 
     if p == "nav_back":
+        _mark_nav_callback_echo_suppression(uid)
         if is_adm:
             _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
         else:
@@ -359,18 +427,23 @@ async def handle_callback(
         return
 
     if p == "nav_back_accidents_menu":
+        _mark_nav_callback_echo_suppression(uid)
         if is_adm:
             _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
         return
 
     if not is_adm:
         if p == "menu_report_accident":
+            if _user_in_accident_wizard(user_states.get(uid)):
+                return
             user_states[uid] = await user_h.start(ctx)
         elif re.match(r"^task_(todo|progress|done|accidents)_\d+$", p):
             await common.show_task_card(ctx)
         return
 
     if p == "menu_add_task":
+        if _admin_in_add_task_wizard(user_states.get(uid)):
+            return
         _set_state_after_admin_int(uid, await admin_h.start_add_task(ctx))
         return
     if p == "menu_accidents":
@@ -393,6 +466,8 @@ async def handle_callback(
         _set_state_after_admin_int(uid, await admin_h.show_accident_tasks_from_menu(ctx))
         return
     if p == "accidents_add":
+        if _admin_in_add_accident_wizard(user_states.get(uid)):
+            return
         _set_state_after_admin_int(uid, await admin_h.start_add_accident(ctx))
         return
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from max_bot.config import ACCIDENTS_SHEET
+from max_bot.config import ACCIDENTS_SHEET, is_max_report_accident_text
 from max_bot.handlers.common_max import BaseMaxHandler, MaxCtx, TextFormatter, get_user_display_name
 from max_bot.keyboards import KeyboardFactory
 from max_bot.max_api import MaxApi
@@ -29,6 +29,12 @@ class UserTaskHandlerMax(BaseMaxHandler):
         return int(UserStates.ACCIDENT_SHORT)
 
     async def receive_accident_short(self, ctx: MaxCtx) -> int:
+        if is_max_report_accident_text(ctx.text):
+            if ctx.incoming_message_mid:
+                await self.message_manager.delete_message(
+                    ctx.user_id, ctx.user_data, ctx.incoming_message_mid
+                )
+            return int(UserStates.ACCIDENT_SHORT)
         ctx.user_data["accident_short"] = (ctx.text or "").strip()
         await self.message_manager.delete_step_messages(ctx)
         await self._ask_accident_detail(ctx)

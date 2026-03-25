@@ -22,6 +22,28 @@ def _inline_kb(buttons_rows: list[list[dict[str, str]]]) -> list[dict]:
     ]
 
 
+def merge_inline_keyboard_attachments(*keyboard_attachment_lists: list[dict]) -> list[dict]:
+    """Объединяет несколько вложений inline_keyboard в одно (строки кнопок идут подряд)."""
+
+    combined_rows: list[list[dict[str, str]]] = []
+    for part in keyboard_attachment_lists:
+        for att in part:
+            if not isinstance(att, dict) or att.get("type") != "inline_keyboard":
+                continue
+            payload = att.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            buttons = payload.get("buttons")
+            if not isinstance(buttons, list):
+                continue
+            for row in buttons:
+                if isinstance(row, list):
+                    combined_rows.append(row)
+    if not combined_rows:
+        return []
+    return _inline_kb(combined_rows)
+
+
 def _cb(text: str, payload: str) -> dict[str, str]:
     return {"type": "callback", "text": text, "payload": payload}
 

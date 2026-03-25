@@ -5,12 +5,14 @@ import logging
 
 from max_bot.config import (
     ACCIDENTS_SHEET,
+    ADD_TASK_BUTTON,
     COMPLETED_SHEET,
     IN_PROGRESS_SHEET,
     LOG_SHEET,
     NOT_STARTED_SHEET,
     Settings,
     SHEET_KEY_TO_NAME,
+    normalize_max_button_text,
 )
 from max_bot.handlers.common_max import (
     BaseMaxHandler,
@@ -19,7 +21,7 @@ from max_bot.handlers.common_max import (
     TextFormatter,
     get_user_display_name,
 )
-from max_bot.keyboards import KeyboardFactory
+from max_bot.keyboards import KeyboardFactory, merge_inline_keyboard_attachments
 from max_bot.states import AdminStates, CONV_END
 from shared.api_client import (
     SheetsServiceError,
@@ -137,15 +139,13 @@ class AdminTaskHandler(BaseMaxHandler):
             ctx.user_data["flow_mode"] = "accidents_menu"
 
         await self.message_manager.cleanup_session(ctx.user_id, ctx.user_data)
-        await self.send_preformatted_text(ctx,
+        await self.send_preformatted_text(
+            ctx,
             TextFormatter.task_details(task),
-            attachments=KeyboardFactory.task_detail_keyboard(
-                sheet_key, row_index, is_admin=True
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.task_detail_keyboard(sheet_key, row_index, is_admin=True),
+                KeyboardFactory.navigation_menu(),
             ),
-        )
-        await self.send_text(ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
         )
 
     async def show_logs(self, ctx: MaxCtx) -> None:
@@ -176,13 +176,13 @@ class AdminTaskHandler(BaseMaxHandler):
             for row in latest_rows
         ]
 
-        await self.send_text(ctx,
+        await self.send_text(
+            ctx,
             "Выберите запись лога",
-            attachments=KeyboardFactory.log_list_keyboard(payload),
-        )
-        await self.send_text(ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.log_list_keyboard(payload),
+                KeyboardFactory.navigation_menu(),
+            ),
         )
 
     async def show_log_detail(self, ctx: MaxCtx) -> None:
@@ -215,13 +215,13 @@ class AdminTaskHandler(BaseMaxHandler):
 
         ctx.user_data["current_state"] = AdminStates.VIEW_LOG_DETAIL
         await self.message_manager.cleanup_session(ctx.user_id, ctx.user_data)
-        await self.send_preformatted_text(ctx,
+        await self.send_preformatted_text(
+            ctx,
             text,
-            attachments=KeyboardFactory.back_to_logs_keyboard(),
-        )
-        await self.send_text(ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.back_to_logs_keyboard(),
+                KeyboardFactory.navigation_menu(),
+            ),
         )
 
     async def back_to_logs(self, ctx: MaxCtx) -> None:
@@ -250,6 +250,12 @@ class AdminTaskHandler(BaseMaxHandler):
     async def receive_task_name(self, ctx: MaxCtx) -> int:
         """Сохраняет название задачи и спрашивает комментарий."""
 
+        if normalize_max_button_text(ctx.text or "") == normalize_max_button_text(ADD_TASK_BUTTON):
+            if ctx.incoming_message_mid:
+                await self.message_manager.delete_message(
+                    ctx.user_id, ctx.user_data, ctx.incoming_message_mid
+                )
+            return AdminStates.ADD_TASK_NAME
         ctx.user_data.setdefault("flow_data", {})["task_name"] = (ctx.text or '').strip()
         await self.message_manager.delete_step_messages(ctx)
         await self._ask_add_comments(ctx)
@@ -327,6 +333,12 @@ class AdminTaskHandler(BaseMaxHandler):
     async def receive_admin_accident_short(self, ctx: MaxCtx) -> int:
         """Сохраняет краткое описание аварии и участок."""
 
+        if normalize_max_button_text(ctx.text or "") == normalize_max_button_text(ADD_ACCIDENT_BUTTON):
+            if ctx.incoming_message_mid:
+                await self.message_manager.delete_message(
+                    ctx.user_id, ctx.user_data, ctx.incoming_message_mid
+                )
+            return AdminStates.ADMIN_ACCIDENT_SHORT
         ctx.user_data.setdefault("flow_data", {})["accident_short"] = (ctx.text or '').strip()
         await self.message_manager.delete_step_messages(ctx)
         await self._ask_admin_accident_detail(ctx)
@@ -880,15 +892,13 @@ class AdminTaskHandler(BaseMaxHandler):
             )
             return
 
-        await self.send_preformatted_text(ctx,
+        await self.send_preformatted_text(
+            ctx,
             TextFormatter.task_details(task),
-            attachments=KeyboardFactory.task_detail_keyboard(
-                sheet_key, row_index, is_admin=True
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.task_detail_keyboard(sheet_key, row_index, is_admin=True),
+                KeyboardFactory.navigation_menu(),
             ),
-        )
-        await self.send_text(ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
         )
 
     async def _show_task_list_for_sheet(
@@ -926,13 +936,13 @@ class AdminTaskHandler(BaseMaxHandler):
             {"task_name": t.task_name or "Без названия", "row_index": t.row_index}
             for t in latest_tasks
         ]
-        await self.send_text(ctx,
+        await self.send_text(
+            ctx,
             f"{'Выберите аварию' if sheet_key == 'accidents' else 'Выберите задачу'}{note}",
-            attachments=KeyboardFactory.task_list_keyboard(payload, sheet_key),
-        )
-        await self.send_text(ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.task_list_keyboard(payload, sheet_key),
+                KeyboardFactory.navigation_menu(),
+            ),
         )
 
     async def start_take_in_work(self, ctx: MaxCtx) -> int:
@@ -1637,15 +1647,15 @@ class AdminTaskHandler(BaseMaxHandler):
             "F": task.added_by or "",
         }
 
-        await self.send_preformatted_text(ctx,
+        await self.send_preformatted_text(
+            ctx,
             TextFormatter.task_details(task),
-            attachments=KeyboardFactory.task_detail_keyboard(
-                str(sheet_key), int(row_index), is_admin=True
+            attachments=merge_inline_keyboard_attachments(
+                KeyboardFactory.task_detail_keyboard(
+                    str(sheet_key), int(row_index), is_admin=True
+                ),
+                KeyboardFactory.navigation_menu(),
             ),
-        )
-        await self.send_text(ctx,
-            "Используйте кнопки ниже для навигации",
-            attachments=KeyboardFactory.navigation_menu(),
         )
         return CONV_END
 
