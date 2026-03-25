@@ -86,6 +86,8 @@ def _parse_admin_ids(raw_value: str) -> tuple[int, ...]:
 class Settings:
     max_bot_token: str
     admin_ids: tuple[int, ...]
+    telegram_bot_token: str
+    telegram_admin_ids: tuple[int, ...]
     base_dir: Path
     api_base_url: str
     api_key: str
@@ -104,6 +106,10 @@ def load_settings() -> Settings:
     raw_legacy = os.getenv("ADMIN_IDS", "").strip()
     admin_ids = _parse_admin_ids(raw_max or raw_legacy)
 
+    raw_tg_admins = os.getenv("TELEGRAM_ADMIN_IDS", "").strip()
+    telegram_admin_ids = _parse_admin_ids(raw_tg_admins or raw_legacy)
+    telegram_bot_token = os.getenv("BOT_TOKEN", "").strip()
+
     api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000").strip().rstrip("/")
     api_key = os.getenv("API_KEY", "").strip()
     warn_if_api_base_url_uses_docker_hostname(api_base_url)
@@ -117,6 +123,8 @@ def load_settings() -> Settings:
     return Settings(
         max_bot_token=token,
         admin_ids=admin_ids,
+        telegram_bot_token=telegram_bot_token,
+        telegram_admin_ids=telegram_admin_ids,
         base_dir=base_dir,
         api_base_url=api_base_url,
         api_key=api_key,

@@ -7,6 +7,7 @@ from max_bot.handlers.common_max import BaseMaxHandler, MaxCtx, TextFormatter, g
 from max_bot.keyboards import KeyboardFactory
 from max_bot.max_api import MaxApi
 from max_bot.states import CONV_END, UserStates
+from max_bot.telegram_notify import notify_telegram_admins_about_accident
 from shared.api_client import SheetsServiceError, append_task, write_log
 
 
@@ -191,6 +192,17 @@ class UserTaskHandlerMax(BaseMaxHandler):
                 await self.max_api.send_message(admin_id, text=message, format_="markdown")
             except Exception as error:
                 logger.warning("Не удалось отправить уведомление об аварии администратору %s: %s", admin_id, error)
+
+        await notify_telegram_admins_about_accident(
+            bot_token=self.settings.telegram_bot_token,
+            admin_chat_ids=self.settings.telegram_admin_ids,
+            short_text=short_text,
+            detail_text=detail_text,
+            urgency_text=urgency_text,
+            who_text=who_text,
+            event_time=event_time,
+            source_label="MAX",
+        )
 
     @staticmethod
     def _clear_accident_data(user_data: dict) -> None:
