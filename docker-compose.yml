@@ -20,6 +20,8 @@ services:
       - api
     environment:
       - API_BASE_URL=http://api:8000
+      # Proxy к Telegram Bot API: задайте в .env (ALL_PROXY / HTTPS_PROXY / HTTP_PROXY) или раскомментируйте:
+      # - HTTPS_PROXY=http://proxy.example.com:8080
 
   max_bot:
     build:

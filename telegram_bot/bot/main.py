@@ -21,6 +21,7 @@ from bot.config import (
     TASKS_IN_PROGRESS_BUTTON,
     TASKS_TODO_BUTTON,
     load_settings,
+    safe_telegram_proxy_log_hint,
 )
 from bot.handlers.admin import AdminTaskHandler
 from bot.handlers.common import CommonHandlers, MessageManager
@@ -78,6 +79,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def build_application() -> Application:
     """Создаёт и настраивает экземпляр Telegram-приложения."""
 
+    log = logging.getLogger(__name__)
     settings = load_settings()
     configure_api_client(settings.api_base_url, settings.api_key)
 
@@ -90,14 +92,20 @@ def build_application() -> Application:
 
     # Стандартный способ инициализации приложения в python-telegram-bot v20+.
     # Для Python 3.13 требуется свежая версия библиотеки (см. requirements.txt).
-    application = (
+    builder = (
         Application.builder()
         .token(settings.bot_token)
         .connect_timeout(30.0)
         .read_timeout(30.0)
         .write_timeout(30.0)
-        .build()
     )
+    if settings.telegram_proxy:
+        log.info(
+            "Запросы к Telegram Bot API идут через proxy: %s",
+            safe_telegram_proxy_log_hint(settings.telegram_proxy),
+        )
+        builder = builder.proxy(settings.telegram_proxy).get_updates_proxy(settings.telegram_proxy)
+    application = builder.build()
 
     application.add_handler(admin_handlers.build())
     application.add_handler(user_handlers.build())

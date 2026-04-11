@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -52,6 +53,7 @@ class Settings:
     base_dir: Path
     api_base_url: str
     api_key: str
+    telegram_proxy: str | None
 
     def is_admin(self, user_id: int | None) -> bool:
         """Проверяет, является ли пользователь администратором."""
@@ -74,6 +76,29 @@ def _parse_admin_ids(raw_value: str) -> tuple[int, ...]:
     return tuple(admin_ids)
 
 
+def resolve_telegram_proxy_from_env() -> str | None:
+    """Возвращает URL HTTPS/HTTP proxy для запросов к Telegram Bot API.
+
+    Приоритет: ALL_PROXY, затем HTTPS_PROXY, затем HTTP_PROXY (как в типичных CLI-утилитах).
+    """
+
+    for key in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY"):
+        raw = os.getenv(key, "").strip()
+        if raw:
+            return raw
+    return None
+
+
+def safe_telegram_proxy_log_hint(proxy_url: str) -> str:
+    """Краткое описание proxy без логина и пароля (только схема и хост[:порт])."""
+
+    parsed = urlparse(proxy_url)
+    host = parsed.hostname or "?"
+    scheme = parsed.scheme or "?"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{scheme}://{host}{port}"
+
+
 def load_settings() -> Settings:
     """Загружает настройки из `.env` и валидирует обязательные поля."""
 
@@ -88,6 +113,7 @@ def load_settings() -> Settings:
 
     api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000").strip().rstrip("/")
     api_key = os.getenv("API_KEY", "").strip()
+    telegram_proxy = resolve_telegram_proxy_from_env()
 
     warn_if_api_base_url_uses_docker_hostname(api_base_url)
 
@@ -102,4 +128,5 @@ def load_settings() -> Settings:
         base_dir=base_dir,
         api_base_url=api_base_url,
         api_key=api_key,
+        telegram_proxy=telegram_proxy,
     )
