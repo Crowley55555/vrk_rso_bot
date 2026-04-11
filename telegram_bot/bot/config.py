@@ -7,6 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from shared.local_dev import warn_if_api_base_url_uses_docker_hostname
+
 
 NOT_STARTED_SHEET = "Не начатые"
 IN_PROGRESS_SHEET = "В работе"
@@ -34,15 +36,22 @@ HOME_BUTTON = "🏠 Главное меню"
 APP_TIMEZONE = timezone(timedelta(hours=3))
 
 
+def _load_env_files() -> None:
+    here = Path(__file__).resolve().parent
+    for candidate in (here / ".env", here.parent / ".env", here.parent.parent / ".env"):
+        if candidate.is_file():
+            load_dotenv(candidate, override=False)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """Настройки приложения, загружаемые из переменных окружения."""
+    """Настройки Telegram-бота, загружаемые из переменных окружения."""
 
     bot_token: str
     admin_ids: tuple[int, ...]
-    spreadsheet_id: str
-    google_credentials_file: Path
     base_dir: Path
+    api_base_url: str
+    api_key: str
 
     def is_admin(self, user_id: int | None) -> bool:
         """Проверяет, является ли пользователь администратором."""
@@ -68,33 +77,29 @@ def _parse_admin_ids(raw_value: str) -> tuple[int, ...]:
 def load_settings() -> Settings:
     """Загружает настройки из `.env` и валидирует обязательные поля."""
 
+    _load_env_files()
+
     base_dir = Path(__file__).resolve().parent.parent
-    load_dotenv(base_dir / ".env")
 
     bot_token = os.getenv("BOT_TOKEN", "").strip()
-    spreadsheet_id = os.getenv("SPREADSHEET_ID", "").strip()
-    credentials_raw = os.getenv("GOOGLE_CREDENTIALS_FILE", "").strip()
-    admin_ids = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+    raw_tg_admins = os.getenv("TELEGRAM_ADMIN_IDS", "").strip()
+    raw_legacy = os.getenv("ADMIN_IDS", "").strip()
+    admin_ids = _parse_admin_ids(raw_tg_admins or raw_legacy)
+
+    api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000").strip().rstrip("/")
+    api_key = os.getenv("API_KEY", "").strip()
+
+    warn_if_api_base_url_uses_docker_hostname(api_base_url)
 
     if not bot_token:
         raise ValueError("Не задана переменная окружения BOT_TOKEN.")
-    if not spreadsheet_id:
-        raise ValueError("Не задана переменная окружения SPREADSHEET_ID.")
-    if not credentials_raw:
-        raise ValueError("Не задана переменная окружения GOOGLE_CREDENTIALS_FILE.")
-
-    credentials_path = Path(credentials_raw)
-    if not credentials_path.is_absolute():
-        credentials_path = (base_dir / credentials_path).resolve()
-    if not credentials_path.exists():
-        raise FileNotFoundError(
-            f"Файл сервисного аккаунта не найден: {credentials_path}"
-        )
+    if not api_key:
+        raise ValueError("Не задана переменная окружения API_KEY.")
 
     return Settings(
         bot_token=bot_token,
         admin_ids=admin_ids,
-        spreadsheet_id=spreadsheet_id,
-        google_credentials_file=credentials_path,
         base_dir=base_dir,
+        api_base_url=api_base_url,
+        api_key=api_key,
     )

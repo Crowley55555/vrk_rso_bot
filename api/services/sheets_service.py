@@ -7,11 +7,7 @@ from typing import Any
 
 import gspread
 
-from bot.config import ACCIDENTS_SHEET, APP_TIMEZONE, LOG_SHEET, Settings
-
-
-SHEET_ACCIDENTS = ACCIDENTS_SHEET
-SHEET_LOG = LOG_SHEET
+from api.config import APP_TIMEZONE, LOG_SHEET, Settings
 
 
 logger = logging.getLogger(__name__)
@@ -31,31 +27,25 @@ class GoogleSheetsService:
         self._write_lock = asyncio.Lock()
 
     async def get_all_tasks(self, sheet_name: str) -> list[dict[str, Any]]:
-        """Возвращает все непустые строки листа в виде словарей."""
-
         try:
             return await asyncio.to_thread(self._get_all_tasks_sync, sheet_name)
-        except Exception as error:  # pragma: no cover - внешнее API
+        except Exception as error:
             logger.exception("Не удалось получить задачи из листа %s", sheet_name)
             raise SheetsServiceError("Не удалось получить данные из Google Sheets.") from error
 
     async def append_task(self, sheet_name: str, row_data: list[Any]) -> None:
-        """Добавляет новую строку в указанный лист."""
-
         try:
             async with self._write_lock:
                 await asyncio.to_thread(self._append_task_sync, sheet_name, row_data)
-        except Exception as error:  # pragma: no cover - внешнее API
+        except Exception as error:
             logger.exception("Не удалось добавить задачу в лист %s", sheet_name)
             raise SheetsServiceError("Не удалось сохранить задачу в Google Sheets.") from error
 
     async def update_cell(self, sheet_name: str, row_index: int, col_index: int, value: Any) -> None:
-        """Обновляет одну ячейку."""
-
         try:
             async with self._write_lock:
                 await asyncio.to_thread(self._update_cell_sync, sheet_name, row_index, col_index, value)
-        except Exception as error:  # pragma: no cover - внешнее API
+        except Exception as error:
             logger.exception(
                 "Не удалось обновить ячейку листа %s: строка=%s столбец=%s",
                 sheet_name,
@@ -65,12 +55,10 @@ class GoogleSheetsService:
             raise SheetsServiceError("Не удалось обновить данные в Google Sheets.") from error
 
     async def delete_row(self, sheet_name: str, row_index: int) -> None:
-        """Удаляет строку из листа."""
-
         try:
             async with self._write_lock:
                 await asyncio.to_thread(self._delete_row_sync, sheet_name, row_index)
-        except Exception as error:  # pragma: no cover - внешнее API
+        except Exception as error:
             logger.exception("Не удалось удалить строку %s из листа %s", row_index, sheet_name)
             raise SheetsServiceError("Не удалось удалить строку в Google Sheets.") from error
 
@@ -81,8 +69,6 @@ class GoogleSheetsService:
         row_index: int,
         extra_data: dict[str, Any],
     ) -> None:
-        """Атомарно переносит задачу между листами: сначала добавляет, затем удаляет."""
-
         row_data = extra_data.get("row_data")
         if not isinstance(row_data, list):
             raise SheetsServiceError("Для переноса задачи не переданы данные строки.")
@@ -96,7 +82,7 @@ class GoogleSheetsService:
                     row_index,
                     row_data,
                 )
-        except Exception as error:  # pragma: no cover - внешнее API
+        except Exception as error:
             logger.exception(
                 "Не удалось перенести задачу из листа %s в %s, строка=%s",
                 from_sheet,
@@ -106,8 +92,6 @@ class GoogleSheetsService:
             raise SheetsServiceError("Не удалось перенести задачу между листами.") from error
 
     def _worksheet(self, sheet_name: str) -> gspread.Worksheet:
-        """Возвращает объект листа по имени."""
-
         return self._spreadsheet.worksheet(sheet_name)
 
     def _get_all_tasks_sync(self, sheet_name: str) -> list[dict[str, Any]]:
@@ -172,8 +156,6 @@ class GoogleSheetsService:
         sheet_name: str,
         details: str,
     ) -> None:
-        """Записывает одну строку в лист «Лог». При ошибке пишет в лог, не прерывая сценарий."""
-
         try:
             async with self._write_lock:
                 row = [
@@ -198,14 +180,10 @@ class GoogleSheetsService:
 
     @staticmethod
     def _table_range_for_row(row_data: list[Any]) -> str:
-        """Возвращает диапазон таблицы от A до последней колонки строки."""
-
         return f"A:{GoogleSheetsService._column_letter(len(row_data))}"
 
     @staticmethod
     def _column_letter(column_index: int) -> str:
-        """Преобразует номер колонки в буквенное представление Google Sheets."""
-
         if column_index < 1:
             return "A"
 
@@ -215,66 +193,3 @@ class GoogleSheetsService:
             current, remainder = divmod(current - 1, 26)
             result = chr(65 + remainder) + result
         return result
-
-
-_service: GoogleSheetsService | None = None
-
-
-def setup_sheets(settings: Settings) -> None:
-    """Инициализирует singleton-сервис работы с Google Sheets."""
-
-    global _service
-    _service = GoogleSheetsService(settings)
-
-
-def _get_service() -> GoogleSheetsService:
-    if _service is None:
-        raise RuntimeError("Сервис Google Sheets не инициализирован.")
-    return _service
-
-
-async def get_all_tasks(sheet_name: str) -> list[dict[str, Any]]:
-    """Возвращает все задачи указанного листа."""
-
-    return await _get_service().get_all_tasks(sheet_name)
-
-
-async def append_task(sheet_name: str, row_data: list[Any]) -> None:
-    """Добавляет задачу в указанный лист."""
-
-    await _get_service().append_task(sheet_name, row_data)
-
-
-async def update_cell(sheet_name: str, row_index: int, col_index: int, value: Any) -> None:
-    """Обновляет одну ячейку в листе."""
-
-    await _get_service().update_cell(sheet_name, row_index, col_index, value)
-
-
-async def delete_row(sheet_name: str, row_index: int) -> None:
-    """Удаляет строку из указанного листа."""
-
-    await _get_service().delete_row(sheet_name, row_index)
-
-
-async def move_task(
-    from_sheet: str,
-    to_sheet: str,
-    row_index: int,
-    extra_data: dict[str, Any],
-) -> None:
-    """Перемещает задачу между листами с блокировкой на запись."""
-
-    await _get_service().move_task(from_sheet, to_sheet, row_index, extra_data)
-
-
-async def write_log(
-    who: str,
-    action: str,
-    task_name: str,
-    sheet_name: str,
-    details: str,
-) -> None:
-    """Пишет запись в лист «Лог». При ошибке только логирует, не прерывает работу."""
-
-    await _get_service().write_log(who, action, task_name, sheet_name, details)

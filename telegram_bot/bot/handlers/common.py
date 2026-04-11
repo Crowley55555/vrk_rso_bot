@@ -29,7 +29,7 @@ from bot.config import (
     TASKS_TODO_BUTTON,
 )
 from bot.keyboards import KeyboardFactory
-from bot.sheets import SheetsServiceError, get_all_tasks
+from shared.api_client import SheetsServiceError, get_all_tasks
 
 
 logger = logging.getLogger(__name__)
@@ -239,14 +239,23 @@ class BaseHandler:
         text: str,
         reply_markup: ReplyKeyboardMarkup | None = None,
         remember_as_last: bool = False,
+        *,
+        disable_notification: bool = False,
     ) -> Message:
-        """Отправляет текст, сохраняя ID сообщения для будущего удаления."""
+        """Отправляет текст, сохраняя ID сообщения для будущего удаления.
+
+        Для администраторов всегда disable_notification: без звука при проверке сценариев.
+        """
+
+        if self.is_admin(update):
+            disable_notification = True
 
         message = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=escape_markdown(text, version=2),
             parse_mode=ParseMode.MARKDOWN_V2,
             reply_markup=reply_markup,
+            disable_notification=disable_notification,
         )
         self.message_manager.remember_message(context, message.message_id)
         if remember_as_last:
@@ -260,14 +269,20 @@ class BaseHandler:
         text: str,
         reply_markup=None,
         remember_as_last: bool = False,
+        *,
+        disable_notification: bool = False,
     ) -> Message:
         """Отправляет заранее отформатированный MarkdownV2-текст."""
+
+        if self.is_admin(update):
+            disable_notification = True
 
         message = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=text,
             parse_mode=ParseMode.MARKDOWN_V2,
             reply_markup=reply_markup,
+            disable_notification=disable_notification,
         )
         self.message_manager.remember_message(context, message.message_id)
         if remember_as_last:

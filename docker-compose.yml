@@ -1,14 +1,33 @@
-version: "3.9"
-
 services:
-  bot:
-    build: .
-    container_name: vrk_rso_bot
-    restart: unless-stopped
-    working_dir: /app
-    env_file:
-      - .env
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    restart: always
+    env_file: .env
+    ports:
+      - "8000:8000"
     volumes:
       - ./credentials.json:/app/credentials.json:ro
-    command: ["python", "-m", "bot.main"]
 
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: telegram_bot/Dockerfile
+    restart: always
+    env_file: .env
+    depends_on:
+      - api
+    environment:
+      - API_BASE_URL=http://api:8000
+
+  max_bot:
+    build:
+      context: .
+      dockerfile: max_bot/Dockerfile
+    restart: always
+    env_file: .env
+    depends_on:
+      - api
+    environment:
+      - API_BASE_URL=http://api:8000

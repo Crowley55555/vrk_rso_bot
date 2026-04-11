@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    _here = Path(__file__).resolve().parent
+    sys.path.append(str(_here.parent))
+    sys.path.append(str(_here.parent.parent))
 
 from telegram import Update
 from telegram.error import Conflict, TimedOut
@@ -23,7 +25,7 @@ from bot.config import (
 from bot.handlers.admin import AdminTaskHandler
 from bot.handlers.common import CommonHandlers, MessageManager
 from bot.handlers.user import UserTaskHandler
-from bot.sheets import setup_sheets
+from shared.api_client import configure_api_client
 
 
 def configure_logging() -> None:
@@ -34,6 +36,10 @@ def configure_logging() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         stream=sys.stdout,
     )
+    # python-telegram-bot ходит в Telegram через httpx; на INFO httpx пишет полный URL
+    # вида https://api.telegram.org/bot<TOKEN>/method — токен оказывается в логах.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -56,9 +62,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if isinstance(update, Update) and update.effective_chat:
         try:
+            uid = update.effective_user.id if update.effective_user else None
+            quiet_for_admin = load_settings().is_admin(uid)
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="Произошла внутренняя ошибка. Попробуйте повторить действие позже.",
+                disable_notification=quiet_for_admin,
             )
         except TimedOut:
             log.warning("Не удалось отправить сообщение об ошибке пользователю: Telegram API timed out.")
@@ -70,7 +79,7 @@ def build_application() -> Application:
     """Создаёт и настраивает экземпляр Telegram-приложения."""
 
     settings = load_settings()
-    setup_sheets(settings)
+    configure_api_client(settings.api_base_url, settings.api_key)
 
     message_manager = MessageManager()
     common_handlers = CommonHandlers(settings, message_manager)
