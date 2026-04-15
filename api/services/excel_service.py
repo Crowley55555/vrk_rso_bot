@@ -124,12 +124,19 @@ class ExcelService:
                 row_uuid=row_uuid,
                 created_at=effective_mtime,
                 updated_at=effective_mtime,
+                row_order=disk_row.get("row_order", 0),
             )
             inserted_count += 1
 
         # 2. Только в БД -> удаляем только то, что уже точно было выгружено на диск.
         for row_uuid in sorted(db_uuids - disk_uuids):
             db_row = db_by_uuid[row_uuid]
+            # Удаляем строку только если она точно была выгружена на диск ранее.
+            # Если upload ни разу не выполнялся (last_upload_at == 0) —
+            # не удаляем ничего, чтобы не потерять данные добавленные через бота.
+            if last_upload_at == 0:
+                skipped_db_newer_count += 1
+                continue
             created_at = self._safe_float(db_row.get("created_at"), default=0.0)
             if created_at > last_upload_at:
                 skipped_db_newer_count += 1
@@ -147,6 +154,8 @@ class ExcelService:
                     continue
 
                 row_id = int(db_row["id"])
+                disk_row_order = int(disk_by_uuid[row_uuid].get("row_order", 0))
+                current_row_order = int(db_row.get("row_order") or 0)
                 disk_values = self._normalize_row_values(disk_by_uuid[row_uuid]["row_data"])
                 db_values = self._normalize_row_values(
                     [
@@ -158,10 +167,13 @@ class ExcelService:
                         db_row.get("col_f", ""),
                     ]
                 )
-                if disk_values == db_values:
+                if disk_values == db_values and current_row_order == disk_row_order:
                     skipped_unchanged_count += 1
                     continue
-                await sqlite_service.update_row(sheet_name, row_id, disk_values)
+                if disk_values != db_values:
+                    await sqlite_service.update_row(sheet_name, row_id, disk_values)
+                if current_row_order != disk_row_order:
+                    await sqlite_service.update_row_order(sheet_name, row_id, disk_row_order)
                 updated_count += 1
 
         skipped_count = read_stats["empty_rows_skipped"] + skipped_db_newer_count + skipped_unchanged_count
@@ -261,6 +273,7 @@ class ExcelService:
                 {
                     "row_uuid": row_uuid,
                     "row_data": row_data,
+                    "row_order": len(rows) + 1,
                 }
             )
 
@@ -302,6 +315,7 @@ class ExcelService:
                 {
                     "row_uuid": current_uuid,
                     "row_data": row["row_data"],
+                    "row_order": row.get("row_order", 0),
                 }
             )
         return normalized, regenerated

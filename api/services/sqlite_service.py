@@ -66,8 +66,8 @@ class SQLiteService:
         table = self._table_for_sheet(sheet_name)
         conn = self._require_connection()
         query = (
-            f"SELECT id, row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, created_at, updated_at "
-            f"FROM {table} ORDER BY id ASC"
+            f"SELECT id, row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, row_order, created_at, updated_at "
+            f"FROM {table} ORDER BY row_order ASC, id ASC"
         )
         async with conn.execute(query) as cursor:
             rows = await cursor.fetchall()
@@ -81,6 +81,7 @@ class SQLiteService:
         row_uuid: str | None = None,
         created_at: float | None = None,
         updated_at: float | None = None,
+        row_order: int = 0,
     ) -> int:
         """Добавляет строку в таблицу и возвращает её id."""
         table = self._table_for_sheet(sheet_name)
@@ -95,9 +96,9 @@ class SQLiteService:
             cursor = await conn.execute(
                 f"""
                 INSERT INTO {table} (
-                    row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, created_at, updated_at
+                    row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, row_order, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row_uuid_value,
@@ -107,12 +108,27 @@ class SQLiteService:
                     values[3],
                     values[4],
                     values[5],
+                    row_order,
                     created,
                     updated,
                 ),
             )
             await conn.commit()
             return int(cursor.lastrowid)
+
+    async def update_row_order(self, sheet_name: str, row_id: int, row_order: int) -> None:
+        """Обновляет порядок строки (row_order) по row_id."""
+        table = self._table_for_sheet(sheet_name)
+        conn = self._require_connection()
+
+        async with self._write_lock:
+            cursor = await conn.execute(
+                f"UPDATE {table} SET row_order = ?, updated_at = ? WHERE id = ?",
+                (row_order, time.time(), row_id),
+            )
+            await conn.commit()
+            if cursor.rowcount == 0:
+                raise SQLiteServiceError(f"Строка id={row_id} не найдена в листе «{sheet_name}».")
 
     async def update_cell(self, sheet_name: str, row_id: int, col_index: int, value: Any) -> None:
         """Обновляет одну ячейку по row_id (row_index=id)."""
@@ -179,7 +195,7 @@ class SQLiteService:
             try:
                 async with conn.execute(
                     f"""
-                    SELECT row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, created_at
+                    SELECT row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, row_order, created_at
                     FROM {source_table}
                     WHERE id = ?
                     """,
@@ -194,9 +210,9 @@ class SQLiteService:
                 insert_cursor = await conn.execute(
                     f"""
                     INSERT INTO {target_table} (
-                        row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, created_at, updated_at
+                        row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, row_order, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["row_uuid"],
@@ -206,6 +222,7 @@ class SQLiteService:
                         row["col_d"],
                         row["col_e"],
                         row["col_f"],
+                        row["row_order"],
                         row["created_at"],
                         new_updated_at,
                     ),
@@ -230,8 +247,8 @@ class SQLiteService:
         table = self._table_for_sheet(sheet_name)
         conn = self._require_connection()
         query = (
-            f"SELECT id, row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, created_at, updated_at "
-            f"FROM {table} WHERE created_at > ? ORDER BY id ASC"
+            f"SELECT id, row_uuid, col_a, col_b, col_c, col_d, col_e, col_f, row_order, created_at, updated_at "
+            f"FROM {table} WHERE created_at > ? ORDER BY row_order ASC, id ASC"
         )
         async with conn.execute(query, (ts,)) as cursor:
             rows = await cursor.fetchall()
@@ -290,6 +307,7 @@ class SQLiteService:
                     col_d       TEXT DEFAULT '',
                     col_e       TEXT DEFAULT '',
                     col_f       TEXT DEFAULT '',
+                    row_order   INTEGER DEFAULT 0,
                     created_at  REAL NOT NULL,
                     updated_at  REAL NOT NULL
                 );
@@ -303,6 +321,7 @@ class SQLiteService:
                     col_d       TEXT DEFAULT '',
                     col_e       TEXT DEFAULT '',
                     col_f       TEXT DEFAULT '',
+                    row_order   INTEGER DEFAULT 0,
                     created_at  REAL NOT NULL,
                     updated_at  REAL NOT NULL
                 );
@@ -316,6 +335,7 @@ class SQLiteService:
                     col_d       TEXT DEFAULT '',
                     col_e       TEXT DEFAULT '',
                     col_f       TEXT DEFAULT '',
+                    row_order   INTEGER DEFAULT 0,
                     created_at  REAL NOT NULL,
                     updated_at  REAL NOT NULL
                 );
@@ -329,6 +349,7 @@ class SQLiteService:
                     col_d       TEXT DEFAULT '',
                     col_e       TEXT DEFAULT '',
                     col_f       TEXT DEFAULT '',
+                    row_order   INTEGER DEFAULT 0,
                     created_at  REAL NOT NULL,
                     updated_at  REAL NOT NULL
                 );
@@ -342,6 +363,7 @@ class SQLiteService:
                     col_d       TEXT DEFAULT '',
                     col_e       TEXT DEFAULT '',
                     col_f       TEXT DEFAULT '',
+                    row_order   INTEGER DEFAULT 0,
                     created_at  REAL NOT NULL,
                     updated_at  REAL NOT NULL
                 );
@@ -352,6 +374,23 @@ class SQLiteService:
                 );
                 """
             )
+
+            # Добавляем колонку row_order в уже существующие таблицы, если её ещё нет.
+            for table_name in (
+                "tasks_todo",
+                "tasks_in_progress",
+                "tasks_done",
+                "tasks_accidents",
+                "tasks_log",
+            ):
+                try:
+                    await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN row_order INTEGER DEFAULT 0;")
+                except aiosqlite.OperationalError as error:
+                    if "duplicate column name" in str(error).lower():
+                        # Колонка уже существует — это нормальный сценарий повторной миграции.
+                        pass
+                    else:
+                        raise
             await conn.commit()
 
     def _table_for_sheet(self, sheet_name: str) -> str:
