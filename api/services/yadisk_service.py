@@ -131,7 +131,10 @@ class YandexDiskService:
                 logger.error("Не удалось получить URL скачивания для %s", remote_path)
                 return False
 
-            download_response = await self._client.get(href)
+            download_response = await self._client.get(
+                href,
+                follow_redirects=True,
+            )
             download_response.raise_for_status()
 
             local_path.parent.mkdir(parents=True, exist_ok=True)
