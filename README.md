@@ -226,6 +226,7 @@ Copy-Item .env.example .env
 Полный список переменных — в [`.env.example`](.env.example). Кратко:
 
 - `BOT_TOKEN`, `MAX_BOT_TOKEN` — токены ботов;
+- опционально `ALL_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` — исходящий proxy к `api.telegram.org` для Telegram-бота (приоритет в этом порядке; на запросы к вашему API по `API_BASE_URL` не влияет);
 - `API_KEY`, `API_BASE_URL` — доступ ботов к сервису таблицы;
 - `TELEGRAM_ADMIN_IDS`, `MAX_ADMIN_IDS` — ID администраторов по платформам (при пустых значениях для Telegram можно использовать устаревший `ADMIN_IDS`);
 - `SPREADSHEET_ID`, `GOOGLE_CREDENTIALS_FILE` — таблица и путь к JSON сервисного аккаунта (для API в Docker обычно `/app/credentials.json`).
@@ -278,6 +279,21 @@ py -3 -m pip install -r max_bot/requirements.txt
 - для API доступны `credentials.json` и переменные `SPREADSHEET_ID`, `API_KEY`, `GOOGLE_CREDENTIALS_FILE` (локально часто `GOOGLE_CREDENTIALS_FILE=credentials.json`);
 - у ботов в `.env` заданы `API_BASE_URL` и тот же `API_KEY`, что и у API;
 - сервисному аккаунту Google выдан доступ к таблице (см. раздел выше).
+
+**Proxy для Telegram Bot API.** Если с сервера нестабилен прямой доступ к `api.telegram.org`, задайте один из `ALL_PROXY`, `HTTPS_PROXY` или `HTTP_PROXY` (первое непустое значение по этому порядку используется для запросов к Telegram). Переменные читает только Telegram-бот; обращения к вашему FastAPI по `API_BASE_URL` идут без этого proxy. Пример в shell перед запуском:
+
+```bash
+export HTTPS_PROXY=http://proxy.example.com:8080
+```
+
+В **systemd** (`/etc/systemd/system/your-bot.service`):
+
+```ini
+[Service]
+Environment=HTTPS_PROXY=http://proxy.example.com:8080
+```
+
+Для **Docker Compose** у сервиса `telegram_bot` уже указан `env_file: .env` — добавьте proxy в тот же `.env` в корне репозитория (или передайте через `environment` в [docker-compose.yml](docker-compose.yml)).
 
 ### 3\. Запуск процессов локально
 
