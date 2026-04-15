@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -261,6 +262,7 @@ class BaseHandler:
         self.message_manager.remember_message(context, message.message_id)
         if remember_as_last:
             context.user_data[MessageManager.LAST_BOT_MESSAGE_KEY] = message.message_id
+        await asyncio.sleep(0.05)
         return message
 
     async def send_preformatted_text(
@@ -288,6 +290,7 @@ class BaseHandler:
         self.message_manager.remember_message(context, message.message_id)
         if remember_as_last:
             context.user_data[MessageManager.LAST_BOT_MESSAGE_KEY] = message.message_id
+        await asyncio.sleep(0.05)
         return message
 
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
