@@ -12,6 +12,7 @@ COPY api/requirements.txt ./api/requirements.txt
 RUN pip install --upgrade pip && pip install -r api/requirements.txt
 
 COPY api ./api
+COPY scripts ./scripts
 
 EXPOSE 8000
 
