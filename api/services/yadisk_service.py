@@ -62,6 +62,7 @@ class YandexDiskService:
                         upload_url,
                         content=file_obj,
                         headers={"Content-Type": "application/octet-stream"},
+                        follow_redirects=True,
                     )
                     put_response.raise_for_status()
             return True
