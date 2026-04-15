@@ -129,6 +129,34 @@ class SQLiteService:
             if cursor.rowcount == 0:
                 raise SQLiteServiceError(f"Строка id={row_id} не найдена в листе «{sheet_name}».")
 
+    async def update_row(self, sheet_name: str, row_id: int, row_data: list[Any]) -> None:
+        """Обновляет строку целиком по колонкам A-F одной SQL-операцией."""
+        table = self._table_for_sheet(sheet_name)
+        conn = self._require_connection()
+        values = self._normalize_row_data(row_data)
+
+        async with self._write_lock:
+            cursor = await conn.execute(
+                f"""
+                UPDATE {table}
+                SET col_a = ?, col_b = ?, col_c = ?, col_d = ?, col_e = ?, col_f = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    values[0],
+                    values[1],
+                    values[2],
+                    values[3],
+                    values[4],
+                    values[5],
+                    time.time(),
+                    row_id,
+                ),
+            )
+            await conn.commit()
+            if cursor.rowcount == 0:
+                raise SQLiteServiceError(f"Строка id={row_id} не найдена в листе «{sheet_name}».")
+
     async def delete_by_id(self, sheet_name: str, row_id: int) -> None:
         """Удаляет строку по row_id (id не пересчитывается)."""
         table = self._table_for_sheet(sheet_name)

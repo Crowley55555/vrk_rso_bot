@@ -153,6 +153,7 @@ class GoogleSheetsService:
         if not self._settings.yandex_disk_token:
             return
 
+        started_at = time.perf_counter()
         try:
             modified = await self._yadisk_service.get_file_modified(self._settings.yandex_disk_remote_path)
             if modified is None:
@@ -170,12 +171,19 @@ class GoogleSheetsService:
             if not downloaded:
                 return
 
+            sheet_snapshots: dict[str, tuple[list[dict[str, Any]], dict[str, int]]] = {}
+            for sheet_name in SUPPORTED_SHEETS:
+                sheet_snapshots[sheet_name] = await self._excel_service.read_sheet_for_import(sheet_name)
+
             async with self._write_lock:
                 for sheet_name in SUPPORTED_SHEETS:
+                    preloaded_rows, preloaded_stats = sheet_snapshots[sheet_name]
                     report = await self._excel_service.import_sheet(
                         sheet_name,
                         self._sqlite_service,
                         disk_mtime=modified,
+                        preloaded_rows=preloaded_rows,
+                        preloaded_read_stats=preloaded_stats,
                     )
                     logger.info(
                         "Merge листа %s: прочитано=%s импортировано=%s пропущено=%s причины=%s",
@@ -188,6 +196,9 @@ class GoogleSheetsService:
                 await self._sqlite_service.set_sync_meta("last_disk_modified", str(modified))
         except Exception as error:
             logger.error("Ошибка синхронизации изменений с Яндекс Диска: %s", error, exc_info=True)
+        finally:
+            elapsed = time.perf_counter() - started_at
+            logger.info("check_disk_changes завершён за %.2f сек.", elapsed)
 
     async def upload_to_yadisk(self) -> bool:
         """Загружает локальный xlsx на Яндекс Диск и обновляет sync_meta."""

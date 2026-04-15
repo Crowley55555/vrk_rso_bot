@@ -42,6 +42,9 @@ async def lifespan(app: FastAPI):
             seconds=settings.disk_check_interval,
             id="check_disk_changes",
             replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=max(settings.disk_check_interval * 2, 60),
         )
         scheduler.add_job(
             app.state.sheets_service.upload_to_yadisk,

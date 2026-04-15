@@ -87,10 +87,16 @@ class ExcelService:
         sheet_name: str,
         sqlite_service: SQLiteService,
         disk_mtime: float | None = None,
+        preloaded_rows: list[dict[str, Any]] | None = None,
+        preloaded_read_stats: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Импортирует лист из xlsx в SQLite с merge по uuid и возвращает отчёт."""
         effective_mtime = disk_mtime if disk_mtime is not None else self._local_file_mtime()
-        disk_rows, read_stats = await asyncio.to_thread(self._read_sheet_rows, sheet_name)
+        if preloaded_rows is not None and preloaded_read_stats is not None:
+            disk_rows = preloaded_rows
+            read_stats = preloaded_read_stats
+        else:
+            disk_rows, read_stats = await asyncio.to_thread(self._read_sheet_rows, sheet_name)
         db_rows = await sqlite_service.get_all(sheet_name)
 
         db_uuids = {str(row["row_uuid"]) for row in db_rows}
@@ -107,6 +113,7 @@ class ExcelService:
         deleted_count = 0
         updated_count = 0
         skipped_db_newer_count = 0
+        skipped_unchanged_count = 0
 
         # 1. Только на диске -> INSERT в SQLite.
         for row_uuid in sorted(disk_uuids - db_uuids):
@@ -140,12 +147,24 @@ class ExcelService:
                     continue
 
                 row_id = int(db_row["id"])
-                disk_values = disk_by_uuid[row_uuid]["row_data"]
-                for col_index, value in enumerate(disk_values, start=1):
-                    await sqlite_service.update_cell(sheet_name, row_id, col_index, value)
+                disk_values = self._normalize_row_values(disk_by_uuid[row_uuid]["row_data"])
+                db_values = self._normalize_row_values(
+                    [
+                        db_row.get("col_a", ""),
+                        db_row.get("col_b", ""),
+                        db_row.get("col_c", ""),
+                        db_row.get("col_d", ""),
+                        db_row.get("col_e", ""),
+                        db_row.get("col_f", ""),
+                    ]
+                )
+                if disk_values == db_values:
+                    skipped_unchanged_count += 1
+                    continue
+                await sqlite_service.update_row(sheet_name, row_id, disk_values)
                 updated_count += 1
 
-        skipped_count = read_stats["empty_rows_skipped"] + skipped_db_newer_count
+        skipped_count = read_stats["empty_rows_skipped"] + skipped_db_newer_count + skipped_unchanged_count
         report = {
             "sheet_name": sheet_name,
             "read_count": read_stats["scanned_rows"],
@@ -154,6 +173,7 @@ class ExcelService:
             "skipped_reasons": {
                 "empty_a_to_f": read_stats["empty_rows_skipped"],
                 "db_newer_or_equal": skipped_db_newer_count,
+                "unchanged_row": skipped_unchanged_count,
             },
             "details": {
                 "inserted": inserted_count,
@@ -172,6 +192,10 @@ class ExcelService:
             report["skipped_reasons"],
         )
         return report
+
+    async def read_sheet_for_import(self, sheet_name: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Считывает лист из xlsx для последующего merge без изменения БД."""
+        return await asyncio.to_thread(self._read_sheet_rows, sheet_name)
 
     async def export_all_sheets(self, sqlite_service: SQLiteService) -> None:
         """Выгружает все поддерживаемые листы из SQLite в xlsx."""
@@ -281,6 +305,14 @@ class ExcelService:
                 }
             )
         return normalized, regenerated
+
+    @staticmethod
+    def _normalize_row_values(values: list[Any]) -> list[str]:
+        """Нормализует значения строки для корректного сравнения A-F."""
+        normalized = ["" if value is None else str(value) for value in values[:6]]
+        if len(normalized) < 6:
+            normalized.extend([""] * (6 - len(normalized)))
+        return normalized
 
     def _load_or_create_workbook(self) -> Workbook:
         if self._excel_path.exists():
