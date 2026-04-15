@@ -159,7 +159,15 @@ async def main() -> None:
         db_empty = await _is_database_empty(sqlite_service)
         if db_empty and local_exists:
             for sheet_name in SUPPORTED_SHEETS:
-                await excel_service.import_sheet(sheet_name, sqlite_service, disk_mtime=disk_modified)
+                report = await excel_service.import_sheet(sheet_name, sqlite_service, disk_mtime=disk_modified)
+                logger.info(
+                    "Bootstrap импорт листа %s: прочитано=%s импортировано=%s пропущено=%s причины=%s",
+                    sheet_name,
+                    report["read_count"],
+                    report["imported_count"],
+                    report["skipped_count"],
+                    report["skipped_reasons"],
+                )
             logger.info("Импорт из xlsx в пустую SQLite завершён.")
         else:
             logger.info("Импорт пропущен (БД уже содержит данные или xlsx недоступен).")

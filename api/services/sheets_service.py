@@ -172,10 +172,18 @@ class GoogleSheetsService:
 
             async with self._write_lock:
                 for sheet_name in SUPPORTED_SHEETS:
-                    await self._excel_service.import_sheet(
+                    report = await self._excel_service.import_sheet(
                         sheet_name,
                         self._sqlite_service,
                         disk_mtime=modified,
+                    )
+                    logger.info(
+                        "Merge листа %s: прочитано=%s импортировано=%s пропущено=%s причины=%s",
+                        sheet_name,
+                        report["read_count"],
+                        report["imported_count"],
+                        report["skipped_count"],
+                        report["skipped_reasons"],
                     )
                 await self._sqlite_service.set_sync_meta("last_disk_modified", str(modified))
         except Exception as error:
