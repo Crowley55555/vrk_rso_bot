@@ -55,16 +55,16 @@ class YandexDiskService:
                 logger.error("Не удалось получить upload URL для %s", remote_path)
                 return False
 
-            # Передаём файл потоком в бинарном режиме без чтения целиком в память.
-            with local_path.open("rb") as file_obj:
-                async with httpx.AsyncClient(timeout=30.0) as upload_client:
-                    put_response = await upload_client.put(
-                        upload_url,
-                        content=file_obj,
-                        headers={"Content-Type": "application/octet-stream"},
-                        follow_redirects=True,
-                    )
-                    put_response.raise_for_status()
+            # Читаем файл целиком в память, чтобы AsyncClient получил bytes.
+            file_bytes = local_path.read_bytes()
+            async with httpx.AsyncClient(timeout=60.0) as upload_client:
+                put_response = await upload_client.put(
+                    upload_url,
+                    content=file_bytes,
+                    headers={"Content-Type": "application/octet-stream"},
+                    follow_redirects=True,
+                )
+                put_response.raise_for_status()
             return True
         except Exception as error:
             logger.error("Ошибка загрузки файла на Яндекс Диск: %s", error, exc_info=True)
