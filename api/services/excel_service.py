@@ -57,11 +57,11 @@ class ExcelService:
         """Полностью перезаписывает лист данными из БД."""
         self._ensure_parent_dir()
         workbook = self._load_or_create_workbook()
-        worksheet = self._ensure_sheet(workbook, sheet_name)
-
-        # Полностью очищаем лист и записываем актуальный срез из SQLite.
-        if worksheet.max_row > 0:
-            worksheet.delete_rows(1, worksheet.max_row)
+        # Удаляем лист и создаём заново — это единственный надёжный способ
+        # полной очистки в openpyxl без риска дублирования строк.
+        if sheet_name in workbook.sheetnames:
+            del workbook[sheet_name]
+        worksheet = workbook.create_sheet(sheet_name)
 
         worksheet.append(self._headers_for_sheet(sheet_name))
         for row in db_rows:
@@ -223,9 +223,11 @@ class ExcelService:
         workbook = self._load_or_create_workbook()
 
         for sheet_name in SUPPORTED_SHEETS:
-            worksheet = self._ensure_sheet(workbook, sheet_name)
-            if worksheet.max_row > 0:
-                worksheet.delete_rows(1, worksheet.max_row)
+            # Удаляем лист и создаём заново — это единственный надёжный способ
+            # полной очистки в openpyxl без риска дублирования строк.
+            if sheet_name in workbook.sheetnames:
+                del workbook[sheet_name]
+            worksheet = workbook.create_sheet(sheet_name)
 
             worksheet.append(self._headers_for_sheet(sheet_name))
             for row in rows_by_sheet.get(sheet_name, []):
