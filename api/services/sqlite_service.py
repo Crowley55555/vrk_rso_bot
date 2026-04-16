@@ -217,6 +217,13 @@ class SQLiteService:
                     raise SQLiteServiceError(f"Строка id={row_id} не найдена в листе «{from_sheet}».")
 
                 new_updated_at = time.time()
+                # При переносе ставим строку в конец целевого листа.
+                async with conn.execute(
+                    f"SELECT COALESCE(MAX(row_order), 0) + 1 FROM {target_table}"
+                ) as cursor:
+                    next_order_row = await cursor.fetchone()
+                next_row_order = int(next_order_row[0]) if next_order_row is not None else 1
+
                 insert_cursor = await conn.execute(
                     f"""
                     INSERT INTO {target_table} (
@@ -232,7 +239,7 @@ class SQLiteService:
                         row["col_d"],
                         row["col_e"],
                         row["col_f"],
-                        row["row_order"],
+                        next_row_order,
                         row["created_at"],
                         new_updated_at,
                     ),
@@ -251,6 +258,19 @@ class SQLiteService:
         async with conn.execute(f"SELECT row_uuid FROM {table}") as cursor:
             rows = await cursor.fetchall()
         return {str(row["row_uuid"]) for row in rows}
+
+    async def find_sheet_by_uuid(self, row_uuid: str) -> str | None:
+        """Возвращает имя листа, в котором уже существует указанный uuid."""
+        conn = self._require_connection()
+        for sheet_name, table in SHEET_TO_TABLE.items():
+            async with conn.execute(
+                f"SELECT 1 FROM {table} WHERE row_uuid = ? LIMIT 1",
+                (row_uuid,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is not None:
+                return sheet_name
+        return None
 
     async def get_rows_created_after(self, sheet_name: str, ts: float) -> list[dict[str, Any]]:
         """Возвращает строки, созданные позже указанного времени."""

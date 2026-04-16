@@ -100,7 +100,7 @@ class ExcelService:
         db_rows = await sqlite_service.get_all(sheet_name)
 
         db_uuids = {str(row["row_uuid"]) for row in db_rows}
-        disk_rows, duplicate_uuid_regenerated = self._make_disk_rows_unique(disk_rows)
+        disk_rows, duplicate_uuid_regenerated = self._make_disk_rows_unique(sheet_name, disk_rows)
 
         db_by_uuid = {str(row["row_uuid"]): row for row in db_rows}
         disk_by_uuid = {str(row["row_uuid"]): row for row in disk_rows}
@@ -117,6 +117,11 @@ class ExcelService:
 
         # 1. Только на диске -> INSERT в SQLite.
         for row_uuid in sorted(disk_uuids - db_uuids):
+            existing_sheet = await sqlite_service.find_sheet_by_uuid(row_uuid)
+            if existing_sheet is not None and existing_sheet != sheet_name:
+                # Не возвращаем строку в текущий лист, если она уже живёт в другом листе после переноса.
+                skipped_db_newer_count += 1
+                continue
             disk_row = disk_by_uuid[row_uuid]
             await sqlite_service.insert(
                 sheet_name,
@@ -133,12 +138,12 @@ class ExcelService:
             db_row = db_by_uuid[row_uuid]
             # Удаляем строку только если она точно была выгружена на диск ранее.
             # Если upload ни разу не выполнялся (last_upload_at == 0) —
-            # не удаляем ничего, чтобы не потерять данные добавленные через бота.
+            # не удаляем ничего, чтобы не потерять локальные изменения.
             if last_upload_at == 0:
                 skipped_db_newer_count += 1
                 continue
-            created_at = self._safe_float(db_row.get("created_at"), default=0.0)
-            if created_at > last_upload_at:
+            updated_at = self._safe_float(db_row.get("updated_at"), default=0.0)
+            if updated_at > last_upload_at:
                 skipped_db_newer_count += 1
                 continue
             await sqlite_service.delete_by_id(sheet_name, int(db_row["id"]))
@@ -268,14 +273,15 @@ class ExcelService:
             if not any(value.strip() for value in row_data):
                 empty_rows_skipped += 1
                 continue
+            row_order = len(rows) + 1
             if not row_uuid:
-                row_uuid = str(uuid.uuid4())
+                row_uuid = self._build_stable_row_uuid(sheet_name, row_order, row_data)
                 uuid_generated += 1
             rows.append(
                 {
                     "row_uuid": row_uuid,
                     "row_data": row_data,
-                    "row_order": len(rows) + 1,
+                    "row_order": row_order,
                 }
             )
 
@@ -301,7 +307,7 @@ class ExcelService:
         raise ExcelServiceError(f"Неизвестный лист для импорта: {sheet_name}")
 
     @staticmethod
-    def _make_disk_rows_unique(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    def _make_disk_rows_unique(sheet_name: str, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
         """Убирает дубли uuid внутри одного листа, не теряя строки."""
         seen: set[str] = set()
         regenerated = 0
@@ -309,8 +315,18 @@ class ExcelService:
 
         for row in rows:
             current_uuid = str(row["row_uuid"])
+            original_uuid = current_uuid
+            duplicate_index = 1
             while current_uuid in seen:
-                current_uuid = str(uuid.uuid4())
+                # Для повторного чтения одного и того же файла дубли uuid должны
+                # получать один и тот же стабильный идентификатор.
+                current_uuid = ExcelService._build_stable_row_uuid(
+                    sheet_name,
+                    int(row.get("row_order", 0) or 0),
+                    row["row_data"],
+                    f"{original_uuid}|{duplicate_index}",
+                )
+                duplicate_index += 1
                 regenerated += 1
             seen.add(current_uuid)
             normalized.append(
@@ -329,6 +345,19 @@ class ExcelService:
         if len(normalized) < 6:
             normalized.extend([""] * (6 - len(normalized)))
         return normalized
+
+    @staticmethod
+    def _build_stable_row_uuid(
+        sheet_name: str,
+        row_order: int,
+        row_data: list[Any],
+        suffix: str = "",
+    ) -> str:
+        """Строит стабильный uuid по содержимому строки и её позиции."""
+        normalized_values = ExcelService._normalize_row_values(row_data)
+        payload_parts = [sheet_name, str(row_order), suffix.strip(), *normalized_values]
+        payload = "|".join(payload_parts)
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, payload))
 
     def _load_or_create_workbook(self) -> Workbook:
         if self._excel_path.exists():

@@ -159,23 +159,23 @@ class GoogleSheetsService:
             if modified is None:
                 return
 
-            last_known_raw = await self._sqlite_service.get_sync_meta("last_disk_modified")
-            last_known = self._safe_float(last_known_raw, default=0.0)
-            if modified <= last_known:
-                return
-
-            downloaded = await self._yadisk_service.download_file(
-                self._settings.yandex_disk_remote_path,
-                self._settings.excel_path,
-            )
-            if not downloaded:
-                return
-
-            sheet_snapshots: dict[str, tuple[list[dict[str, Any]], dict[str, int]]] = {}
-            for sheet_name in SUPPORTED_SHEETS:
-                sheet_snapshots[sheet_name] = await self._excel_service.read_sheet_for_import(sheet_name)
-
             async with self._write_lock:
+                last_known_raw = await self._sqlite_service.get_sync_meta("last_disk_modified")
+                last_known = self._safe_float(last_known_raw, default=0.0)
+                if modified <= last_known:
+                    return
+
+                downloaded = await self._yadisk_service.download_file(
+                    self._settings.yandex_disk_remote_path,
+                    self._settings.excel_path,
+                )
+                if not downloaded:
+                    return
+
+                sheet_snapshots: dict[str, tuple[list[dict[str, Any]], dict[str, int]]] = {}
+                for sheet_name in SUPPORTED_SHEETS:
+                    sheet_snapshots[sheet_name] = await self._excel_service.read_sheet_for_import(sheet_name)
+
                 for sheet_name in SUPPORTED_SHEETS:
                     preloaded_rows, preloaded_stats = sheet_snapshots[sheet_name]
                     report = await self._excel_service.import_sheet(
@@ -193,6 +193,9 @@ class GoogleSheetsService:
                         report["skipped_count"],
                         report["skipped_reasons"],
                     )
+                # После merge фиксируем в локальном xlsx каноническое состояние БД,
+                # чтобы сохранить стабильные uuid и порядок строк.
+                await self._excel_service.export_all_sheets(self._sqlite_service)
                 await self._sqlite_service.set_sync_meta("last_disk_modified", str(modified))
         except Exception as error:
             logger.error("Ошибка синхронизации изменений с Яндекс Диска: %s", error, exc_info=True)
