@@ -193,9 +193,6 @@ class GoogleSheetsService:
                         report["skipped_count"],
                         report["skipped_reasons"],
                     )
-                # После merge фиксируем в локальном xlsx каноническое состояние БД,
-                # чтобы сохранить стабильные uuid и порядок строк.
-                await self._excel_service.export_all_sheets(self._sqlite_service)
                 await self._sqlite_service.set_sync_meta("last_disk_modified", str(modified))
         except Exception as error:
             logger.error("Ошибка синхронизации изменений с Яндекс Диска: %s", error, exc_info=True)
