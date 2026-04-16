@@ -1040,10 +1040,8 @@ class AdminTaskHandler(BaseHandler):
             return
 
         task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
-        latest_tasks = task_views[-30:]
+        latest_tasks = task_views
         note = ""
-        if len(task_views) > 30:
-            note = "\n\nПоказаны последние 30 аварий" if sheet_key == "accidents" else "\n\nПоказаны последние 30 задач"
         payload = [
             {"task_name": t.task_name or "Без названия", "row_index": t.row_index}
             for t in latest_tasks
