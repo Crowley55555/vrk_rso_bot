@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -181,30 +182,31 @@ class TaskMapper:
 
     @staticmethod
     def from_sheet_row(sheet_key: str, row: dict) -> TaskView:
-        """Преобразует сырую строку листа в нормализованный объект."""
-
+        """Преобразует строку API в нормализованный объект.
+        Ключи соответствуют TASK_HEADERS / ACCIDENTS_HEADERS из excel_service.
+        """
+        if sheet_key == "accidents":
+            return TaskView(
+                sheet_key=sheet_key,
+                sheet_name=SHEET_KEY_TO_NAME[sheet_key],
+                row_index=int(row["row_index"]),
+                date=row.get("Дата и время") or "",
+                task_name=row.get("Краткое описание") or "",
+                comments=row.get("Подробное описание") or "",
+                responsible=row.get("Ответственные") or "",
+                deadline=row.get("Срочность") or "",
+                added_by=row.get("Кто сообщил") or "",
+            )
         return TaskView(
             sheet_key=sheet_key,
             sheet_name=SHEET_KEY_TO_NAME[sheet_key],
             row_index=int(row["row_index"]),
-            date=row.get("Дата добавления") or row.get("Дата") or "",
-            task_name=(
-                row.get("Краткое описание аварии, на каком участке произошла", "")
-                if sheet_key == "accidents"
-                else row.get("Наименование задачи", "")
-            ),
-            comments=(
-                row.get("Подробное описание произошедшего", "")
-                if sheet_key == "accidents"
-                else row.get("Комментарии") or row.get("Коментарии") or ""
-            ),
-            responsible=row.get("Ответственные") or row.get("column_4") or "",
-            deadline=(
-                row.get("Срочность ремонта", "")
-                if sheet_key == "accidents"
-                else row.get("Срок выполнения") or row.get("Срок") or row.get("column_5") or ""
-            ),
-            added_by=row.get("Кто добавил", ""),
+            date=row.get("Дата") or "",
+            task_name=row.get("Наименование") or "",
+            comments=row.get("Комментарий") or "",
+            responsible=row.get("Ответственные") or "",
+            deadline=row.get("Срок") or "",
+            added_by=row.get("Кто добавил") or "",
         )
 
 
@@ -260,6 +262,7 @@ class BaseHandler:
         self.message_manager.remember_message(context, message.message_id)
         if remember_as_last:
             context.user_data[MessageManager.LAST_BOT_MESSAGE_KEY] = message.message_id
+        await asyncio.sleep(0.05)
         return message
 
     async def send_preformatted_text(
@@ -287,6 +290,7 @@ class BaseHandler:
         self.message_manager.remember_message(context, message.message_id)
         if remember_as_last:
             context.user_data[MessageManager.LAST_BOT_MESSAGE_KEY] = message.message_id
+        await asyncio.sleep(0.05)
         return message
 
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -482,11 +486,9 @@ class CommonHandlers(BaseHandler):
             return
 
         task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
-        latest_tasks = task_views[-30:]
+        latest_tasks = task_views
 
         note = ""
-        if len(task_views) > 30:
-            note = "\n\nПоказаны последние 30 аварий" if sheet_key == "accidents" else "\n\nПоказаны последние 30 задач"
 
         payload = [{"task_name": task.task_name or "Без названия", "row_index": task.row_index} for task in latest_tasks]
 
