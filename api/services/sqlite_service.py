@@ -93,6 +93,16 @@ class SQLiteService:
         row_uuid_value = row_uuid or str(uuid.uuid4())
 
         async with self._write_lock:
+            if row_order == 0:
+                # Для строк без явного порядка ставим следующий номер, чтобы они попадали в конец.
+                async with conn.execute(
+                    f"SELECT COALESCE(MAX(row_order), 0) + 1 FROM {table}"
+                ) as cur:
+                    next_order_row = await cur.fetchone()
+                next_order = int(next_order_row[0]) if next_order_row is not None else 1
+            else:
+                next_order = row_order
+
             cursor = await conn.execute(
                 f"""
                 INSERT INTO {table} (
@@ -108,7 +118,7 @@ class SQLiteService:
                     values[3],
                     values[4],
                     values[5],
-                    row_order,
+                    next_order,
                     created,
                     updated,
                 ),
