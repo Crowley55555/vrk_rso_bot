@@ -190,11 +190,22 @@ async def main_async() -> None:
     )
 
     try:
+        consecutive_errors = 0
         while True:
             try:
                 updates, marker = await max_api.get_updates(marker=marker)
+                consecutive_errors = 0  # сбрасываем после успешного получения обновлений
             except Exception:
                 logger.exception("Ошибка long polling, повтор через 5 с")
+                consecutive_errors += 1
+                if consecutive_errors >= 10:
+                    # После 10 подряд ошибок (50 сек) завершаем процесс —
+                    # Docker restart: always перезапустит контейнер.
+                    logger.error(
+                        "Слишком много ошибок подряд (%s), завершаем процесс для перезапуска.",
+                        consecutive_errors,
+                    )
+                    sys.exit(1)
                 await asyncio.sleep(5)
                 continue
 

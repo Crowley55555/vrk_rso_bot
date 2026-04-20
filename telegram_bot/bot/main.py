@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time as _time
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -176,7 +177,23 @@ def main() -> None:
     try:
         application = build_application()
         log.info("Бот запущен, ожидание обновлений.")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        max_retries = 10
+        retry_count = 0
+        while True:
+            try:
+                application.run_polling(allowed_updates=Update.ALL_TYPES)
+                break  # нормальное завершение
+            except Exception as e:
+                retry_count += 1
+                log.exception("Ошибка run_polling (#%s): %s", retry_count, e)
+                if retry_count >= max_retries:
+                    log.error(
+                        "Превышено число попыток (%s), завершаем процесс для перезапуска.",
+                        max_retries,
+                    )
+                    sys.exit(1)
+                log.info("Повтор через 10 сек...")
+                _time.sleep(10)
     except Exception as e:
         log.exception("Ошибка при запуске: %s", e)
         raise
