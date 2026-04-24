@@ -415,7 +415,7 @@ class ExcelService:
         disk_values = ExcelService._normalize_row_values(disk_row["row_data"])
         disk_row_order = int(disk_row.get("row_order", 0) or 0)
         exact_candidates: list[tuple[int, int, dict[str, Any]]] = []
-        order_candidates: list[dict[str, Any]] = []
+        near_candidates: list[tuple[int, int, dict[str, Any]]] = []
 
         for db_row in db_rows:
             row_id = int(db_row["id"])
@@ -435,14 +435,32 @@ class ExcelService:
             if db_values == disk_values:
                 exact_candidates.append((abs(current_row_order - disk_row_order), row_id, db_row))
                 continue
-            if current_row_order == disk_row_order:
-                order_candidates.append(db_row)
+
+            # Для строк без uuid не делаем опасный match только по row_order.
+            # Разрешаем только "почти точное" совпадение: та же позиция и
+            # отличается не больше одной ячейки A-F.
+            if current_row_order != disk_row_order:
+                continue
+
+            differing_cells = 0
+            matching_non_empty_cells = 0
+            for db_value, disk_value in zip(db_values, disk_values):
+                if db_value == disk_value:
+                    if db_value.strip():
+                        matching_non_empty_cells += 1
+                    continue
+                differing_cells += 1
+
+            if differing_cells <= 1 and matching_non_empty_cells >= 1:
+                near_candidates.append((matching_non_empty_cells, row_id, db_row))
 
         if exact_candidates:
             exact_candidates.sort(key=lambda item: (item[0], item[1]))
             return exact_candidates[0][2], True
-        if len(order_candidates) == 1:
-            return order_candidates[0], False
+        if near_candidates:
+            near_candidates.sort(key=lambda item: (-item[0], item[1]))
+            if len(near_candidates) == 1 or near_candidates[0][0] > near_candidates[1][0]:
+                return near_candidates[0][2], False
         return None, False
 
     @staticmethod
