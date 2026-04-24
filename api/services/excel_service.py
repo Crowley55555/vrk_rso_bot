@@ -100,11 +100,21 @@ class ExcelService:
         db_rows = await sqlite_service.get_all(sheet_name)
 
         db_uuids = {str(row["row_uuid"]) for row in db_rows}
-        disk_rows, duplicate_uuid_regenerated = self._make_disk_rows_unique(sheet_name, disk_rows)
+        disk_rows_with_uuid = [row for row in disk_rows if str(row.get("row_uuid") or "").strip()]
+        disk_rows_without_uuid = [row for row in disk_rows if not str(row.get("row_uuid") or "").strip()]
+        disk_rows_with_uuid, duplicate_uuid_regenerated = self._make_disk_rows_unique(
+            sheet_name,
+            disk_rows_with_uuid,
+        )
 
         db_by_uuid = {str(row["row_uuid"]): row for row in db_rows}
-        disk_by_uuid = {str(row["row_uuid"]): row for row in disk_rows}
+        disk_by_uuid = {str(row["row_uuid"]): row for row in disk_rows_with_uuid}
         disk_uuids = set(disk_by_uuid.keys())
+        matched_db_ids = {
+            int(row["id"])
+            for row_uuid, row in db_by_uuid.items()
+            if row_uuid in disk_uuids
+        }
 
         last_upload_raw = await sqlite_service.get_sync_meta("last_upload_at")
         last_upload_at = self._safe_float(last_upload_raw, default=0.0)
@@ -114,6 +124,59 @@ class ExcelService:
         updated_count = 0
         skipped_db_newer_count = 0
         skipped_unchanged_count = 0
+
+        # Строки без служебного uuid сопоставляем с уже существующими строками
+        # по содержимому и порядку, чтобы правки на Яндекс Диске не плодили дубли.
+        for disk_row in disk_rows_without_uuid:
+            matched_row, matched_by_content = self._match_disk_row_without_uuid(
+                disk_row,
+                db_rows,
+                matched_db_ids,
+            )
+            if matched_row is None:
+                await sqlite_service.insert(
+                    sheet_name,
+                    disk_row["row_data"],
+                    created_at=effective_mtime,
+                    updated_at=effective_mtime,
+                    row_order=disk_row.get("row_order", 0),
+                )
+                inserted_count += 1
+                continue
+
+            row_id = int(matched_row["id"])
+            matched_db_ids.add(row_id)
+            disk_row_order = int(disk_row.get("row_order", 0) or 0)
+            current_row_order = int(matched_row.get("row_order") or 0)
+            disk_values = self._normalize_row_values(disk_row["row_data"])
+            db_values = self._normalize_row_values(
+                [
+                    matched_row.get("col_a", ""),
+                    matched_row.get("col_b", ""),
+                    matched_row.get("col_c", ""),
+                    matched_row.get("col_d", ""),
+                    matched_row.get("col_e", ""),
+                    matched_row.get("col_f", ""),
+                ]
+            )
+            db_updated_at = self._safe_float(matched_row.get("updated_at"), default=0.0)
+            changed = False
+
+            if current_row_order != disk_row_order:
+                await sqlite_service.update_row_order(sheet_name, row_id, disk_row_order)
+                changed = True
+
+            if disk_values != db_values:
+                if matched_by_content or effective_mtime > db_updated_at:
+                    await sqlite_service.update_row(sheet_name, row_id, disk_values)
+                    changed = True
+                else:
+                    skipped_db_newer_count += 1
+
+            if changed:
+                updated_count += 1
+            else:
+                skipped_unchanged_count += 1
 
         # 1. Только на диске -> INSERT в SQLite.
         for row_uuid in sorted(disk_uuids - db_uuids):
@@ -136,6 +199,8 @@ class ExcelService:
         # 2. Только в БД -> удаляем только то, что уже точно было выгружено на диск.
         for row_uuid in sorted(db_uuids - disk_uuids):
             db_row = db_by_uuid[row_uuid]
+            if int(db_row["id"]) in matched_db_ids:
+                continue
             # Удаляем строку только если она точно была выгружена на диск ранее.
             # Если upload ни разу не выполнялся (last_upload_at == 0) —
             # не удаляем ничего, чтобы не потерять локальные изменения.
@@ -153,11 +218,6 @@ class ExcelService:
         if effective_mtime > 0:
             for row_uuid in sorted(db_uuids & disk_uuids):
                 db_row = db_by_uuid[row_uuid]
-                db_updated_at = self._safe_float(db_row.get("updated_at"), default=0.0)
-                if effective_mtime <= db_updated_at:
-                    skipped_db_newer_count += 1
-                    continue
-
                 row_id = int(db_row["id"])
                 disk_row_order = int(disk_by_uuid[row_uuid].get("row_order", 0))
                 current_row_order = int(db_row.get("row_order") or 0)
@@ -175,11 +235,19 @@ class ExcelService:
                 if disk_values == db_values and current_row_order == disk_row_order:
                     skipped_unchanged_count += 1
                     continue
-                if disk_values != db_values:
-                    await sqlite_service.update_row(sheet_name, row_id, disk_values)
+                changed = False
                 if current_row_order != disk_row_order:
                     await sqlite_service.update_row_order(sheet_name, row_id, disk_row_order)
-                updated_count += 1
+                    changed = True
+                if disk_values != db_values:
+                    db_updated_at = self._safe_float(db_row.get("updated_at"), default=0.0)
+                    if effective_mtime > db_updated_at:
+                        await sqlite_service.update_row(sheet_name, row_id, disk_values)
+                        changed = True
+                    else:
+                        skipped_db_newer_count += 1
+                if changed:
+                    updated_count += 1
 
         skipped_count = read_stats["empty_rows_skipped"] + skipped_db_newer_count + skipped_unchanged_count
         report = {
@@ -275,7 +343,6 @@ class ExcelService:
                 continue
             row_order = len(rows) + 1
             if not row_uuid:
-                row_uuid = self._build_stable_row_uuid(sheet_name, row_order, row_data)
                 uuid_generated += 1
             rows.append(
                 {
@@ -337,6 +404,46 @@ class ExcelService:
                 }
             )
         return normalized, regenerated
+
+    @staticmethod
+    def _match_disk_row_without_uuid(
+        disk_row: dict[str, Any],
+        db_rows: list[dict[str, Any]],
+        reserved_ids: set[int],
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Ищет строку БД для строки без uuid по содержимому и порядку."""
+        disk_values = ExcelService._normalize_row_values(disk_row["row_data"])
+        disk_row_order = int(disk_row.get("row_order", 0) or 0)
+        exact_candidates: list[tuple[int, int, dict[str, Any]]] = []
+        order_candidates: list[dict[str, Any]] = []
+
+        for db_row in db_rows:
+            row_id = int(db_row["id"])
+            if row_id in reserved_ids:
+                continue
+            db_values = ExcelService._normalize_row_values(
+                [
+                    db_row.get("col_a", ""),
+                    db_row.get("col_b", ""),
+                    db_row.get("col_c", ""),
+                    db_row.get("col_d", ""),
+                    db_row.get("col_e", ""),
+                    db_row.get("col_f", ""),
+                ]
+            )
+            current_row_order = int(db_row.get("row_order") or 0)
+            if db_values == disk_values:
+                exact_candidates.append((abs(current_row_order - disk_row_order), row_id, db_row))
+                continue
+            if current_row_order == disk_row_order:
+                order_candidates.append(db_row)
+
+        if exact_candidates:
+            exact_candidates.sort(key=lambda item: (item[0], item[1]))
+            return exact_candidates[0][2], True
+        if len(order_candidates) == 1:
+            return order_candidates[0], False
+        return None, False
 
     @staticmethod
     def _normalize_row_values(values: list[Any]) -> list[str]:

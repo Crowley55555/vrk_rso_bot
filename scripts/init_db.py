@@ -168,23 +168,22 @@ async def main() -> None:
                     report["skipped_count"],
                     report["skipped_reasons"],
                 )
-            # После bootstrap-импорта сохраняем канонический xlsx из SQLite,
-            # чтобы зафиксировать uuid и порядок строк в локальном файле.
-            await excel_service.export_all_sheets(sqlite_service)
             logger.info("Импорт из xlsx в пустую SQLite завершён.")
         else:
             logger.info("Импорт пропущен (БД уже содержит данные или xlsx недоступен).")
 
         # Шаг 6. Записываем начальные значения sync_meta.
         logger.info("Шаг 6/6: записываем начальные значения sync_meta.")
-        await sqlite_service.set_sync_meta("last_upload_at", "0.0")
         if downloaded_from_disk and disk_modified is not None:
+            await sqlite_service.set_sync_meta("last_upload_at", str(disk_modified))
             await sqlite_service.set_sync_meta("last_disk_modified", str(disk_modified))
             logger.info(
-                "sync_meta инициализировано: last_upload_at=0.0, last_disk_modified=%s.",
+                "sync_meta инициализировано: last_upload_at=%s, last_disk_modified=%s.",
+                disk_modified,
                 disk_modified,
             )
         else:
+            await sqlite_service.set_sync_meta("last_upload_at", "0.0")
             await sqlite_service.set_sync_meta("last_disk_modified", "")
             logger.info("sync_meta инициализировано: last_upload_at=0.0, last_disk_modified=''.")
 
