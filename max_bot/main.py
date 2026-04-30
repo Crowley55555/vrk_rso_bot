@@ -6,11 +6,12 @@ import re
 import sys
 import time
 from typing import Any
-from max_bot.config import BACK_BUTTON, HOME_BUTTON, load_settings
+from max_bot.config import BACK_BUTTON, HOME_BUTTON, is_max_report_accident_text, load_settings
 from max_bot.handlers.admin import AdminTaskHandler
 from max_bot.handlers.common_max import CommonHandlersMax, MaxCtx, MaxMessageManager
+from max_bot.handlers.user import UserTaskHandlerMax
 from max_bot.max_api import MaxApi, _extract_mid, extract_user_id, message_body_text, sender_user_id
-from max_bot.states import CONV_END, AdminStates
+from max_bot.states import CONV_END, AdminStates, UserStates
 from shared.api_client import configure_api_client
 
 
@@ -152,6 +153,13 @@ def _should_suppress_nav_text_echo(uid: int) -> bool:
     return True
 
 
+def _user_in_accident_wizard(state: int | None) -> bool:
+    if state is None:
+        return False
+    s = int(state)
+    return int(UserStates.ACCIDENT_SHORT) <= s <= int(UserStates.ACCIDENT_URGENCY)
+
+
 def _admin_in_add_task_wizard(state: int | None) -> bool:
     if state is None:
         return False
@@ -173,6 +181,7 @@ async def main_async() -> None:
     max_api = MaxApi(settings.max_bot_token, settings.max_api_base)
     mm = MaxMessageManager(max_api)
     common = CommonHandlersMax(settings, mm, max_api)
+    user_h = UserTaskHandlerMax(settings, mm, max_api)
     admin_h = AdminTaskHandler(settings, mm, max_api)
 
     marker: int | None = None
@@ -234,7 +243,7 @@ async def main_async() -> None:
                     callback_message_mid=cb_mid,
                     sender=user_d,
                 )
-                await handle_callback(ctx, settings, common, admin_h)
+                await handle_callback(ctx, settings, common, user_h, admin_h)
 
             for upd in msg_u:
                 uid, text, mid, sender = _parse_message_created(upd)
@@ -250,7 +259,7 @@ async def main_async() -> None:
                     incoming_message_mid=mid,
                     sender=sender,
                 )
-                await handle_message(ctx, common, admin_h)
+                await handle_message(ctx, settings, common, user_h, admin_h)
 
             for upd in other_u:
                 ut = upd.get("update_type")
@@ -261,7 +270,9 @@ async def main_async() -> None:
 
 async def handle_message(
     ctx: MaxCtx,
+    settings,
     common: CommonHandlersMax,
+    user_h: UserTaskHandlerMax,
     admin_h: AdminTaskHandler,
 ) -> None:
     uid = ctx.user_id
@@ -283,6 +294,7 @@ async def handle_message(
         await common.show_main_menu(uid, ud)
         return
 
+    is_adm = settings.is_admin(uid)
     st = user_states.get(uid)
 
     if text in (BACK_BUTTON, HOME_BUTTON):
@@ -290,19 +302,60 @@ async def handle_message(
             if ctx.incoming_message_mid:
                 await ctx.message_manager.delete_message(uid, ud, ctx.incoming_message_mid)
             return
-        res = await admin_h.go_back(ctx) if st else await admin_h.go_home(ctx)
-        _set_state_after_admin_int(uid, res)
+        if is_adm:
+            res = await admin_h.go_back(ctx) if st else await admin_h.go_home(ctx)
+            _set_state_after_admin_int(uid, res)
+        else:
+            if st:
+                if text == HOME_BUTTON:
+                    r = await user_h.go_home(ctx)
+                else:
+                    r = await user_h.go_back(ctx)
+                if r == CONV_END:
+                    user_states.pop(uid, None)
+                else:
+                    user_states[uid] = r
+            else:
+                await common.go_home(ctx)
+                user_states.pop(uid, None)
+        return
+
+    if is_adm:
+        if st is not None:
+            nxt = await dispatch_admin_text(st, ctx, admin_h)
+            if nxt == CONV_END:
+                user_states.pop(uid, None)
+            else:
+                user_states[uid] = nxt
+            return
+        await common.send_text(ctx, "Используйте кнопки меню или команду /start")
         return
 
     if st is not None:
-        nxt = await dispatch_admin_text(st, ctx, admin_h)
+        nxt = await dispatch_user_text(st, ctx, user_h)
         if nxt == CONV_END:
             user_states.pop(uid, None)
         else:
             user_states[uid] = nxt
         return
 
-    await common.send_text(ctx, "Используйте кнопки меню или команду /start")
+    if is_max_report_accident_text(text):
+        user_states[uid] = await user_h.start(ctx)
+        return
+
+    await common.send_text(ctx, "Нажмите /start или выберите действие в меню.")
+
+
+async def dispatch_user_text(state: int, ctx: MaxCtx, user_h: UserTaskHandlerMax) -> int:
+    if state == int(UserStates.ACCIDENT_SHORT):
+        return await user_h.receive_accident_short(ctx)
+    if state == int(UserStates.ACCIDENT_DETAIL):
+        return await user_h.receive_accident_detail(ctx)
+    if state == int(UserStates.ACCIDENT_WHO):
+        return await user_h.receive_accident_who(ctx)
+    if state == int(UserStates.ACCIDENT_URGENCY):
+        return await user_h.finish_creation(ctx)
+    return CONV_END
 
 
 async def dispatch_admin_text(state: int, ctx: MaxCtx, admin_h: AdminTaskHandler) -> int:
@@ -354,12 +407,15 @@ async def dispatch_admin_text(state: int, ctx: MaxCtx, admin_h: AdminTaskHandler
 
 async def handle_callback(
     ctx: MaxCtx,
+    settings,
     common: CommonHandlersMax,
+    user_h: UserTaskHandlerMax,
     admin_h: AdminTaskHandler,
 ) -> None:
     uid = ctx.user_id
     ud = ctx.user_data
     p = (ctx.callback_payload or "").strip()
+    is_adm = settings.is_admin(uid)
 
     # Для текущих сценариев нам не нужен отдельный ответ на callback:
     # после нажатия мы сразу отправляем/обновляем сообщения сами.
@@ -367,17 +423,38 @@ async def handle_callback(
 
     if p == "nav_home" or p == "home_menu":
         _mark_nav_callback_echo_suppression(uid)
-        _set_state_after_admin_int(uid, await admin_h.go_home(ctx))
+        if is_adm:
+            _set_state_after_admin_int(uid, await admin_h.go_home(ctx))
+        else:
+            await common.go_home_from_callback(ctx)
+            user_states.pop(uid, None)
         return
 
     if p == "nav_back":
         _mark_nav_callback_echo_suppression(uid)
-        _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
+        if is_adm:
+            _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
+        else:
+            r = await user_h.go_back(ctx)
+            if r == CONV_END:
+                user_states.pop(uid, None)
+            else:
+                user_states[uid] = r
         return
 
     if p == "nav_back_accidents_menu":
         _mark_nav_callback_echo_suppression(uid)
-        _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
+        if is_adm:
+            _set_state_after_admin_int(uid, await admin_h.go_back(ctx))
+        return
+
+    if not is_adm:
+        if p == "menu_report_accident":
+            if _user_in_accident_wizard(user_states.get(uid)):
+                return
+            user_states[uid] = await user_h.start(ctx)
+        elif re.match(r"^task_(todo|progress|done|accidents)_\d+$", p):
+            await common.show_task_card(ctx)
         return
 
     if p == "menu_add_task":

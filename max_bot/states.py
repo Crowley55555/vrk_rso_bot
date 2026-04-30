@@ -1,6 +1,13 @@
 from enum import IntEnum
 
 
+class UserStates(IntEnum):
+    ACCIDENT_SHORT = 1
+    ACCIDENT_DETAIL = 2
+    ACCIDENT_WHO = 3
+    ACCIDENT_URGENCY = 4
+
+
 class AdminStates(IntEnum):
     ACCIDENTS_MENU = 5
 

@@ -6,6 +6,7 @@ from max_bot.config import (
     BACK_BUTTON,
     HOME_BUTTON,
     LOGS_BUTTON,
+    REPORT_ACCIDENT_BUTTON,
     TASKS_DONE_BUTTON,
     TASKS_IN_PROGRESS_BUTTON,
     TASKS_TODO_BUTTON,
@@ -74,6 +75,11 @@ class KeyboardFactory:
             ]
         )
 
+    @staticmethod
+    def user_main_menu() -> list[dict]:
+        return _inline_kb([[ _cb(REPORT_ACCIDENT_BUTTON, "menu_report_accident") ]])
+
+    @staticmethod
     def get_accidents_submenu_keyboard() -> list[dict]:
         return _inline_kb(
             [

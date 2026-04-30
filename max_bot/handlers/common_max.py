@@ -17,6 +17,7 @@ from max_bot.config import (
     IN_PROGRESS_SHEET,
     LOGS_BUTTON,
     NOT_STARTED_SHEET,
+    REPORT_ACCIDENT_BUTTON,
     Settings,
     SHEET_KEY_TO_NAME,
     TASKS_DONE_BUTTON,
@@ -313,10 +314,17 @@ class BaseMaxHandler:
             max_api=self.max_api,
             message_manager=self.message_manager,
         )
+        if self.settings.is_admin(user_id):
+            await self.send_text(
+                ctx,
+                "Выберите что сделать",
+                attachments=KeyboardFactory.admin_main_menu(),
+            )
+            return
         await self.send_text(
             ctx,
-            "Выберите что сделать",
-            attachments=KeyboardFactory.admin_main_menu(),
+            "Выберите действие",
+            attachments=KeyboardFactory.user_main_menu(),
         )
 
     async def show_error(
