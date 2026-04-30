@@ -24,7 +24,6 @@ SHEET_KEY_TO_NAME = {
 }
 
 ADD_TASK_BUTTON = "➕ Добавить задачу"
-REPORT_ACCIDENT_BUTTON = "🚨 Сообщить об аварии"
 TASKS_TODO_BUTTON = "📋 Задачи к выполнению"
 TASKS_IN_PROGRESS_BUTTON = "🔄 В работе"
 TASKS_DONE_BUTTON = "✅ Выполненные задачи"
@@ -34,31 +33,6 @@ BACK_BUTTON = "◀️ Назад"
 HOME_BUTTON = "🏠 Главное меню"
 
 APP_TIMEZONE = timezone(timedelta(hours=3))
-
-
-def normalize_max_button_text(text: str) -> str:
-    """Убирает вариативность пробелов и невидимых символов в тексте с кнопки MAX."""
-
-    return " ".join(
-        (text or "")
-        .replace("\ufe0f", "")
-        .replace("\u200b", "")
-        .strip()
-        .split()
-    )
-
-
-def is_max_report_accident_text(text: str | None) -> bool:
-    """Текст как у кнопки «Сообщить об аварии» (callback type message или ручной ввод)."""
-
-    if not text:
-        return False
-    n = normalize_max_button_text(text)
-    if not n:
-        return False
-    if n == normalize_max_button_text(REPORT_ACCIDENT_BUTTON):
-        return True
-    return n == normalize_max_button_text("Сообщить об аварии")
 
 MAX_API_BASE_DEFAULT = "https://platform-api.max.ru"
 
@@ -94,7 +68,9 @@ class Settings:
     max_api_base: str
 
     def is_admin(self, user_id: int | None) -> bool:
-        return user_id is not None and user_id in self.admin_ids
+        # В MAX-боте оставляем только административный режим:
+        # любой пользователь, который может взаимодействовать с ботом, работает как администратор.
+        return user_id is not None
 
 
 def load_settings() -> Settings:
