@@ -21,6 +21,7 @@ from shared.api_client import (
 from bot.states import AdminStates
 
 from .common import (
+    ADMIN_MENU_PATTERN,
     ACCIDENTS_PATTERN,
     ADD_TASK_PATTERN,
     BACK_PATTERN,
@@ -28,6 +29,7 @@ from .common import (
     BaseHandler,
     TaskMapper,
     TextFormatter,
+    build_recent_task_payload,
     get_user_display_name,
 )
 
@@ -45,7 +47,14 @@ class AdminTaskHandler(BaseHandler):
         """Создаёт `ConversationHandler` для административных сценариев."""
 
         admin_filter = filters.User(user_id=list(self.settings.admin_ids))
-        user_text_filter = filters.TEXT & ~filters.COMMAND & ~filters.Regex(BACK_PATTERN) & ~filters.Regex(HOME_PATTERN)
+        user_text_filter = (
+            filters.TEXT
+            & ~filters.COMMAND
+            & ~filters.Regex(BACK_PATTERN)
+            & ~filters.Regex(HOME_PATTERN)
+            & ~filters.Regex(ADD_TASK_PATTERN)
+            & ~filters.Regex(ADMIN_MENU_PATTERN)
+        )
 
         return ConversationHandler(
             entry_points=[
@@ -94,6 +103,12 @@ class AdminTaskHandler(BaseHandler):
                 ],
             },
             fallbacks=[
+                MessageHandler(filters.Regex(ADD_TASK_PATTERN) & admin_filter, self.start_add_task),
+                MessageHandler(filters.Regex(ACCIDENTS_PATTERN) & admin_filter, self.show_accidents_menu),
+                MessageHandler(filters.Regex(r"^📋 Задачи к выполнению$") & admin_filter, self.open_todo_tasks),
+                MessageHandler(filters.Regex(r"^🔄 В работе$") & admin_filter, self.open_in_progress_tasks),
+                MessageHandler(filters.Regex(r"^✅ Выполненные задачи$") & admin_filter, self.open_done_tasks),
+                MessageHandler(filters.Regex(r"^📊 Логи$") & admin_filter, self.open_logs),
                 MessageHandler(filters.Regex(BACK_PATTERN), self.go_back),
                 MessageHandler(filters.Regex(HOME_PATTERN), self.go_home),
                 CommandHandler("cancel", self.cancel),
@@ -101,6 +116,46 @@ class AdminTaskHandler(BaseHandler):
             name="admin_task_conversation",
             persistent=False,
         )
+
+    async def _reset_for_menu_switch(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Сбрасывает активный сценарий перед переходом по основному меню."""
+
+        if update.message:
+            self.message_manager.remember_user_message(update, context)
+        await self.message_manager.cleanup_session(update.effective_chat.id, context)
+        context.user_data.pop("flow_data", None)
+        context.user_data.pop("flow_mode", None)
+        context.user_data.pop("current_task", None)
+        context.user_data.pop("selected_task", None)
+        context.user_data.pop("current_state", None)
+
+    async def open_todo_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Прерывает текущий сценарий и открывает список задач к выполнению."""
+
+        await self._reset_for_menu_switch(update, context)
+        await self._show_task_list_for_sheet(update, context, "todo")
+        return ConversationHandler.END
+
+    async def open_in_progress_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Прерывает текущий сценарий и открывает список задач в работе."""
+
+        await self._reset_for_menu_switch(update, context)
+        await self._show_task_list_for_sheet(update, context, "progress")
+        return ConversationHandler.END
+
+    async def open_done_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Прерывает текущий сценарий и открывает список выполненных задач."""
+
+        await self._reset_for_menu_switch(update, context)
+        await self._show_task_list_for_sheet(update, context, "done")
+        return ConversationHandler.END
+
+    async def open_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Прерывает текущий сценарий и открывает список логов."""
+
+        await self._reset_for_menu_switch(update, context)
+        await self.show_logs(update, context)
+        return ConversationHandler.END
 
     async def safe_delete_message(
         self,
@@ -1040,12 +1095,7 @@ class AdminTaskHandler(BaseHandler):
             return
 
         task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
-        latest_tasks = task_views
-        note = ""
-        payload = [
-            {"task_name": t.task_name or "Без названия", "row_index": t.row_index}
-            for t in latest_tasks
-        ]
+        payload, note = build_recent_task_payload(task_views, sheet_key)
         await self.send_text(
             update,
             context,

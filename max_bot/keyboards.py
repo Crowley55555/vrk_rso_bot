@@ -12,6 +12,15 @@ from max_bot.config import (
     TASKS_TODO_BUTTON,
 )
 
+MAX_TASK_BUTTON_TEXT_LENGTH = 64
+
+
+def _trim_task_button_text(text: str) -> str:
+    value = (text or "").strip() or "Без названия"
+    if len(value) <= MAX_TASK_BUTTON_TEXT_LENGTH:
+        return value
+    return f"{value[: MAX_TASK_BUTTON_TEXT_LENGTH - 3].rstrip()}..."
+
 
 def _inline_kb(buttons_rows: list[list[dict[str, str]]]) -> list[dict]:
     return [
@@ -102,7 +111,7 @@ class KeyboardFactory:
     @staticmethod
     def task_list_keyboard(tasks: list[dict], sheet_key: str) -> list[dict]:
         keyboard = [
-            [_cb(task["task_name"], f"task_{sheet_key}_{task['row_index']}")]
+            [_cb(_trim_task_button_text(str(task["task_name"])), f"task_{sheet_key}_{task['row_index']}")]
             for task in tasks
         ]
         return _inline_kb(keyboard)

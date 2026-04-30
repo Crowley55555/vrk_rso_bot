@@ -34,6 +34,7 @@ from shared.api_client import SheetsServiceError, get_all_tasks
 
 
 logger = logging.getLogger(__name__)
+LIST_PAGE_SIZE = 30
 
 
 def get_user_display_name(user) -> str:
@@ -208,6 +209,25 @@ class TaskMapper:
             deadline=row.get("Срок") or "",
             added_by=row.get("Кто добавил") or "",
         )
+
+
+def build_recent_task_payload(task_views: list[TaskView], sheet_key: str) -> tuple[list[dict[str, int | str]], str]:
+    """Возвращает последние записи листа и поясняющую заметку для пользователя."""
+
+    visible_tasks = task_views[-LIST_PAGE_SIZE:]
+    note = ""
+    if len(task_views) > LIST_PAGE_SIZE:
+        note = (
+            "\n\nПоказаны последние 30 аварий"
+            if sheet_key == "accidents"
+            else "\n\nПоказаны последние 30 задач"
+        )
+
+    payload = [
+        {"task_name": task.task_name or "Без названия", "row_index": task.row_index}
+        for task in visible_tasks
+    ]
+    return payload, note
 
 
 class BaseHandler:
@@ -486,11 +506,7 @@ class CommonHandlers(BaseHandler):
             return
 
         task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
-        latest_tasks = task_views
-
-        note = ""
-
-        payload = [{"task_name": task.task_name or "Без названия", "row_index": task.row_index} for task in latest_tasks]
+        payload, note = build_recent_task_payload(task_views, sheet_key)
 
         await self.send_text(
             update,

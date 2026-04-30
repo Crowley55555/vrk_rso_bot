@@ -19,6 +19,7 @@ from max_bot.handlers.common_max import (
     MaxCtx,
     TaskMapper,
     TextFormatter,
+    build_recent_task_payload,
     get_user_display_name,
 )
 from max_bot.keyboards import KeyboardFactory, merge_inline_keyboard_attachments
@@ -928,14 +929,7 @@ class AdminTaskHandler(BaseMaxHandler):
             return
 
         task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
-        latest_tasks = task_views[-30:]
-        note = ""
-        if len(task_views) > 30:
-            note = "\n\nПоказаны последние 30 аварий" if sheet_key == "accidents" else "\n\nПоказаны последние 30 задач"
-        payload = [
-            {"task_name": t.task_name or "Без названия", "row_index": t.row_index}
-            for t in latest_tasks
-        ]
+        payload, note = build_recent_task_payload(task_views, sheet_key)
         await self.send_text(
             ctx,
             f"{'Выберите аварию' if sheet_key == 'accidents' else 'Выберите задачу'}{note}",

@@ -30,6 +30,7 @@ from shared.api_client import SheetsServiceError, get_all_tasks
 
 
 logger = logging.getLogger(__name__)
+LIST_PAGE_SIZE = 30
 
 
 def get_user_display_name(user: Any) -> str:
@@ -101,25 +102,47 @@ class TaskMapper:
             sheet_key=sheet_key,
             sheet_name=SHEET_KEY_TO_NAME[sheet_key],
             row_index=int(row["row_index"]),
-            date=row.get("Дата добавления") or row.get("Дата") or "",
+            date=row.get("Дата и время") or row.get("Дата добавления") or row.get("Дата") or "",
             task_name=(
-                row.get("Краткое описание аварии, на каком участке произошла", "")
+                row.get("Краткое описание")
+                or row.get("Краткое описание аварии, на каком участке произошла", "")
                 if sheet_key == "accidents"
-                else row.get("Наименование задачи", "")
+                else row.get("Наименование") or row.get("Наименование задачи", "")
             ),
             comments=(
-                row.get("Подробное описание произошедшего", "")
+                row.get("Подробное описание")
+                or row.get("Подробное описание произошедшего", "")
                 if sheet_key == "accidents"
-                else row.get("Комментарии") or row.get("Коментарии") or ""
+                else row.get("Комментарий") or row.get("Комментарии") or row.get("Коментарии") or ""
             ),
             responsible=row.get("Ответственные") or row.get("column_4") or "",
             deadline=(
-                row.get("Срочность ремонта", "")
+                row.get("Срочность")
+                or row.get("Срочность ремонта", "")
                 if sheet_key == "accidents"
                 else row.get("Срок выполнения") or row.get("Срок") or row.get("column_5") or ""
             ),
-            added_by=row.get("Кто добавил", ""),
+            added_by=row.get("Кто сообщил") or row.get("Кто добавил", ""),
         )
+
+
+def build_recent_task_payload(task_views: list[TaskView], sheet_key: str) -> tuple[list[dict[str, int | str]], str]:
+    """Возвращает последние записи листа и пояснение для пользователя."""
+
+    visible_tasks = task_views[-LIST_PAGE_SIZE:]
+    note = ""
+    if len(task_views) > LIST_PAGE_SIZE:
+        note = (
+            "\n\nПоказаны последние 30 аварий"
+            if sheet_key == "accidents"
+            else "\n\nПоказаны последние 30 задач"
+        )
+
+    payload = [
+        {"task_name": task.task_name or "Без названия", "row_index": task.row_index}
+        for task in visible_tasks
+    ]
+    return payload, note
 
 
 class MaxMessageManager:
@@ -428,11 +451,7 @@ class CommonHandlersMax(BaseMaxHandler):
             return
 
         task_views = [TaskMapper.from_sheet_row(sheet_key, row) for row in tasks]
-        latest_tasks = task_views[-30:]
-        note = ""
-        if len(task_views) > 30:
-            note = "\n\nПоказаны последние 30 аварий" if sheet_key == "accidents" else "\n\nПоказаны последние 30 задач"
-        payload = [{"task_name": t.task_name or "Без названия", "row_index": t.row_index} for t in latest_tasks]
+        payload, note = build_recent_task_payload(task_views, sheet_key)
 
         await self.send_text(
             ctx,

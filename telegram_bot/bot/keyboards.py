@@ -14,6 +14,15 @@ from bot.config import (
     TASKS_TODO_BUTTON,
 )
 
+MAX_TASK_BUTTON_TEXT_LENGTH = 64
+
+
+def _trim_task_button_text(text: str) -> str:
+    value = (text or "").strip() or "Без названия"
+    if len(value) <= MAX_TASK_BUTTON_TEXT_LENGTH:
+        return value
+    return f"{value[: MAX_TASK_BUTTON_TEXT_LENGTH - 3].rstrip()}..."
+
 
 class KeyboardFactory:
     """Фабрика клавиатур для разных сценариев бота."""
@@ -80,7 +89,7 @@ class KeyboardFactory:
         keyboard = [
             [
                 InlineKeyboardButton(
-                    text=task["task_name"],
+                    text=_trim_task_button_text(str(task["task_name"])),
                     callback_data=f"task_{sheet_key}_{task['row_index']}",
                 )
             ]
