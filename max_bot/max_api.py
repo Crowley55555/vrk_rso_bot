@@ -9,6 +9,23 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def extract_user_id(payload: dict[str, Any] | None) -> int | None:
+    """Извлекает user_id из объектов MAX API с учётом разных вариантов ключей."""
+
+    if not payload or not isinstance(payload, dict):
+        return None
+
+    for key in ("user_id", "userId", "id"):
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _extract_mid(message: dict[str, Any] | None) -> str | None:
     if not message:
         return None
@@ -41,9 +58,9 @@ def sender_user_id(message: dict[str, Any] | None) -> int | None:
         return None
     sender = message.get("sender")
     if isinstance(sender, dict):
-        uid = sender.get("user_id")
+        uid = extract_user_id(sender)
         if uid is not None:
-            return int(uid)
+            return uid
     return None
 
 

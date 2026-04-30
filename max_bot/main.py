@@ -10,7 +10,7 @@ from max_bot.config import BACK_BUTTON, HOME_BUTTON, is_max_report_accident_text
 from max_bot.handlers.admin import AdminTaskHandler
 from max_bot.handlers.common_max import CommonHandlersMax, MaxCtx, MaxMessageManager
 from max_bot.handlers.user import UserTaskHandlerMax
-from max_bot.max_api import MaxApi, _extract_mid, message_body_text, sender_user_id
+from max_bot.max_api import MaxApi, _extract_mid, extract_user_id, message_body_text, sender_user_id
 from max_bot.states import CONV_END, AdminStates, UserStates
 from shared.api_client import configure_api_client
 
@@ -85,7 +85,7 @@ def _parse_callback_update(raw: dict) -> tuple[str, str, int | None, str | None,
     if not isinstance(user, dict):
         user = {}
 
-    uid = user.get("user_id")
+    uid = extract_user_id(user)
     if uid is None:
         uid = sender_user_id(msg_for_mid)
     if uid is None and isinstance(raw.get("message"), dict):
@@ -109,6 +109,8 @@ def _parse_callback_update(raw: dict) -> tuple[str, str, int | None, str | None,
 def _parse_message_created(raw: dict) -> tuple[int | None, str, str | None, dict | None]:
     msg = raw.get("message") or {}
     uid = sender_user_id(msg)
+    if uid is None and isinstance(msg.get("sender"), dict):
+        uid = extract_user_id(msg.get("sender"))
     if uid is not None:
         uid = int(uid)
     text = message_body_text(msg)
@@ -213,9 +215,12 @@ async def main_async() -> None:
 
             for upd in bot_u:
                 u = upd.get("user")
-                if not isinstance(u, dict) or u.get("user_id") is None:
+                if not isinstance(u, dict):
                     continue
-                uid = int(u["user_id"])
+                uid = extract_user_id(u)
+                if uid is None:
+                    logger.warning("bot_started без user_id: %s", list(u.keys()))
+                    continue
                 ud = _ud(uid)
                 ud.clear()
                 user_states.pop(uid, None)
